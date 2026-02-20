@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>JobTrack AI</title>
+  <link rel="stylesheet" href="sidepanel.css" />
+</head>
+<body>
+
+  <!-- ── Header ───────────────────────────────── -->
+  <header class="app-header">
+    <div class="logo">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+        <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/>
+        <rect x="9" y="3" width="6" height="4" rx="1" stroke="#fff" stroke-width="2.2"/>
+        <path d="M9 12h6M9 16h4" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+      <span>JobTrack AI</span>
+    </div>
+    <div class="header-right">
+      <span id="apiStatus" class="api-badge no-key" title="Set API key in Settings">No API Key</span>
+    </div>
+  </header>
+
+  <!-- ── Tab Navigation ────────────────────────── -->
+  <nav class="tab-nav">
+    <button class="tab-btn active" data-tab="dashboard" title="Dashboard">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="7" height="7" rx="1" stroke="currentColor" stroke-width="2"/><rect x="14" y="3" width="7" height="7" rx="1" stroke="currentColor" stroke-width="2"/><rect x="3" y="14" width="7" height="7" rx="1" stroke="currentColor" stroke-width="2"/><rect x="14" y="14" width="7" height="7" rx="1" stroke="currentColor" stroke-width="2"/></svg>
+      <span>Dashboard</span>
+    </button>
+    <button class="tab-btn" data-tab="resumes" title="Resumes">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" stroke="currentColor" stroke-width="2"/><polyline points="14 2 14 8 20 8" stroke="currentColor" stroke-width="2"/><line x1="8" y1="13" x2="16" y2="13" stroke="currentColor" stroke-width="2"/><line x1="8" y1="17" x2="12" y2="17" stroke="currentColor" stroke-width="2"/></svg>
+      <span>Resumes</span>
+    </button>
+    <button class="tab-btn" data-tab="jobs" title="Jobs">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><rect x="2" y="7" width="20" height="14" rx="2" stroke="currentColor" stroke-width="2"/><path d="M16 7V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v2" stroke="currentColor" stroke-width="2"/><line x1="12" y1="12" x2="12" y2="16" stroke="currentColor" stroke-width="2"/><line x1="10" y1="14" x2="14" y2="14" stroke="currentColor" stroke-width="2"/></svg>
+      <span>Jobs</span>
+    </button>
+    <button class="tab-btn" data-tab="analyze" title="Analyze">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="8" stroke="currentColor" stroke-width="2"/><path d="M21 21l-4.35-4.35" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M11 8v3l2 2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      <span>Analyze</span>
+    </button>
+    <button class="tab-btn" data-tab="tracker" title="Tracker">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span>Tracker</span>
+    </button>
+    <button class="tab-btn" data-tab="settings" title="Settings">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z" stroke="currentColor" stroke-width="2"/></svg>
+      <span>Settings</span>
+    </button>
+  </nav>
+
+  <!-- ── Job Detected Banner ──────────────────── -->
+  <div class="job-banner hidden" id="jobBanner">
+    <div class="job-banner-info">
+      <div class="job-banner-dot"></div>
+      <div>
+        <div class="job-banner-title" id="jobBannerTitle">Job detected</div>
+        <div class="job-banner-sub" id="jobBannerSub">Tap to analyze with your best resume</div>
+      </div>
+    </div>
+    <div class="job-banner-actions">
+      <button class="job-banner-btn" id="jobBannerAnalyze">Analyze →</button>
+      <button class="job-banner-close" id="jobBannerClose">×</button>
+    </div>
+  </div>
+
+  <!-- ── Main Content ──────────────────────────── -->
+  <main class="tab-content" id="tabContent">
+
+    <!-- DASHBOARD -->
+    <section id="tab-dashboard" class="tab-panel active">
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-icon" style="background:#e0e7ff;color:#4f46e5">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" stroke="currentColor" stroke-width="2"/><polyline points="14 2 14 8 20 8" stroke="currentColor" stroke-width="2"/></svg>
+          </div>
+          <div><div class="stat-num" id="dashResumes">0</div><div class="stat-lbl">Resumes</div></div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon" style="background:#fef3c7;color:#d97706">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><rect x="2" y="7" width="20" height="14" rx="2" stroke="currentColor" stroke-width="2"/><path d="M16 7V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v2" stroke="currentColor" stroke-width="2"/></svg>
+          </div>
+          <div><div class="stat-num" id="dashJobs">0</div><div class="stat-lbl">Jobs Saved</div></div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon" style="background:#d1fae5;color:#059669">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          </div>
+          <div><div class="stat-num" id="dashApps">0</div><div class="stat-lbl">Applications</div></div>
+        </div>
+      </div>
+
+      <div id="dashAnalytics" class="analytics-row"></div>
+
+      <div class="section-title">Quick Actions</div>
+      <div class="quick-actions">
+        <button class="qa-btn" id="qaAddResume">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><line x1="12" y1="5" x2="12" y2="19" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/><line x1="5" y1="12" x2="19" y2="12" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>
+          Upload Resume
+        </button>
+        <button class="qa-btn" id="qaCaptureJD">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><polyline points="16 6 12 2 8 6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><line x1="12" y1="2" x2="12" y2="15" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+          Capture JD
+        </button>
+        <button class="qa-btn" id="qaAnalyze">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="8" stroke="currentColor" stroke-width="2.2"/><path d="M21 21l-4.35-4.35" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+          Analyze Match
+        </button>
+        <button class="qa-btn qa-btn-fill" id="qaFillApp">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+          Fill Form
+        </button>
+      </div>
+
+      <div class="section-title">Recent Applications</div>
+      <div id="dashRecentApps" class="recent-list"></div>
+    </section>
+
+    <!-- RESUMES -->
+    <section id="tab-resumes" class="tab-panel">
+      <div class="panel-header">
+        <h2 class="panel-title">My Resumes</h2>
+        <button class="btn-icon" id="btnAddResume" title="Upload Resume">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><line x1="12" y1="5" x2="12" y2="19" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/><line x1="5" y1="12" x2="19" y2="12" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+
+      <!-- Upload area -->
+      <div class="upload-area" id="uploadArea">
+        <div class="upload-icon">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" stroke="#9ca3af" stroke-width="2"/><polyline points="17 8 12 3 7 8" stroke="#9ca3af" stroke-width="2"/><line x1="12" y1="3" x2="12" y2="15" stroke="#9ca3af" stroke-width="2"/></svg>
+        </div>
+        <div class="upload-text">Drop PDF or click to upload</div>
+        <div class="upload-sub">PDF files only · Text extraction is local & free</div>
+        <button class="btn-upload" id="btnUploadResume">Choose File</button>
+        <input type="file" id="resumeFileInput" accept=".pdf,.txt" class="hidden" />
+      </div>
+
+      <!-- Or paste text -->
+      <div class="or-divider"><span>or paste resume text</span></div>
+      <div class="paste-area" id="pasteArea">
+        <input type="text" id="resumeNameInput" placeholder="Resume name (e.g. 'Software Engineer v2')" class="text-input" />
+        <textarea id="resumeTextArea" placeholder="Paste your resume text here…" rows="6" class="text-area"></textarea>
+        <button class="btn-sm btn-primary" id="btnSaveResumeText">Save Resume</button>
+      </div>
+
+      <div id="resumeList" class="card-list"></div>
+    </section>
+
+    <!-- JOBS -->
+    <section id="tab-jobs" class="tab-panel">
+      <div class="panel-header">
+        <h2 class="panel-title">Saved Jobs</h2>
+        <button class="btn-icon" id="btnAddJob" title="Add Job">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><line x1="12" y1="5" x2="12" y2="19" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/><line x1="5" y1="12" x2="19" y2="12" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+
+      <div class="search-bar">
+        <input type="text" id="jobSearchInput" placeholder="🔍  Search by title or company…" class="search-input" />
+      </div>
+
+      <div class="capture-bar">
+        <button class="btn-capture" id="btnCapturePage">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><polyline points="16 6 12 2 8 6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><line x1="12" y1="2" x2="12" y2="15" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+          Capture JD from Current Tab
+        </button>
+      </div>
+
+      <!-- Add job manually (hidden by default) -->
+      <div class="add-job-form hidden" id="addJobForm">
+        <input type="text" id="jobTitleInput" placeholder="Job Title" class="text-input" />
+        <input type="text" id="jobCompanyInput" placeholder="Company" class="text-input" />
+        <textarea id="jobDescInput" placeholder="Paste job description here…" rows="8" class="text-area"></textarea>
+        <div class="form-row">
+          <button class="btn-sm btn-ghost" id="btnCancelJob">Cancel</button>
+          <button class="btn-sm btn-primary" id="btnSaveJob">Save Job</button>
+        </div>
+      </div>
+
+      <div id="jobList" class="card-list"></div>
+    </section>
+
+    <!-- ANALYZE -->
+    <section id="tab-analyze" class="tab-panel">
+      <div class="panel-header">
+        <h2 class="panel-title">Analyze Match</h2>
+      </div>
+
+      <div class="analyze-selects">
+        <div class="select-group">
+          <label class="select-label">Resume</label>
+          <select id="analyzeResume" class="select-input">
+            <option value="">— Select a resume —</option>
+          </select>
+        </div>
+        <div class="select-group">
+          <label class="select-label">Job Description</label>
+          <select id="analyzeJob" class="select-input">
+            <option value="">— Select a job —</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Local match (free, instant) -->
+      <div id="localMatchSection" class="local-match hidden">
+        <div class="local-match-header">
+          <span>⚡ Instant Keyword Match</span>
+          <span class="free-badge">Free</span>
+        </div>
+        <div id="localMatchContent"></div>
+      </div>
+
+      <div class="analyze-actions">
+        <button class="btn-analyze-free" id="btnLocalMatch">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><polyline points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Instant Match (Free)
+        </button>
+        <button class="btn-analyze-ai" id="btnAIAnalyze">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M12 2a10 10 0 100 20 10 10 0 000-20z" stroke="currentColor" stroke-width="2"/><path d="M12 8v4l3 3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          Deep AI Analysis
+        </button>
+      </div>
+
+      <!-- Auto-fill & Apply row (always visible when a job is selected) -->
+      <div class="fill-apply-bar" id="fillApplyBar" style="display:none">
+        <button class="btn-fill-form" id="btnFillForm">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+          Auto-Fill Application
+        </button>
+        <button class="btn-mark-applied" id="btnMarkApplied">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><polyline points="20 6 9 17 4 12" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Mark as Applied
+        </button>
+      </div>
+
+      <div id="analyzeLoading" class="loading-card hidden">
+        <div class="spinner"></div>
+        <span>Analyzing with Claude…</span>
+      </div>
+
+      <div id="analyzeResults" class="results-container hidden"></div>
+    </section>
+
+    <!-- TRACKER -->
+    <section id="tab-tracker" class="tab-panel">
+      <div class="panel-header">
+        <h2 class="panel-title">Application Tracker</h2>
+        <button class="btn-icon" id="btnAddApp" title="Add Application">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><line x1="12" y1="5" x2="12" y2="19" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/><line x1="5" y1="12" x2="19" y2="12" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+
+      <div class="search-bar">
+        <input type="text" id="trackerSearchInput" placeholder="🔍  Search applications…" class="search-input" />
+      </div>
+
+      <!-- Add application form -->
+      <div class="add-app-form hidden" id="addAppForm">
+        <select id="appJobSelect" class="select-input"><option value="">— Link a saved job —</option></select>
+        <select id="appResumeSelect" class="select-input"><option value="">— Resume used —</option></select>
+        <select id="appStatusSelect" class="select-input">
+          <option value="saved">Saved</option>
+          <option value="applied">Applied</option>
+          <option value="interview">Interview</option>
+          <option value="offer">Offer</option>
+          <option value="rejected">Rejected</option>
+        </select>
+        <textarea id="appNotes" placeholder="Notes (optional)…" rows="2" class="text-area"></textarea>
+        <div class="form-row">
+          <button class="btn-sm btn-ghost" id="btnCancelApp">Cancel</button>
+          <button class="btn-sm btn-primary" id="btnSaveApp">Save</button>
+        </div>
+      </div>
+
+      <div class="tracker-board" id="trackerBoard"></div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section id="tab-settings" class="tab-panel">
+      <div class="panel-header">
+        <h2 class="panel-title">Settings</h2>
+      </div>
+
+      <div class="settings-card">
+        <div class="setting-group">
+          <label class="setting-label">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><line x1="12" y1="17" x2="12.01" y2="17" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            AI Provider
+          </label>
+          <select id="providerSelect" class="select-input">
+            <option value="gemini">Google Gemini ⭐ Free tier available</option>
+            <option value="anthropic">Anthropic Claude (paid)</option>
+          </select>
+        </div>
+
+        <div class="setting-group">
+          <label class="setting-label">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 11-7.778 7.778 5.5 5.5 0 017.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            API Key
+          </label>
+          <div class="api-key-row">
+            <input type="password" id="apiKeyInput" placeholder="Paste your API key…" class="text-input" />
+            <button class="btn-show-key" id="btnShowKey" title="Show/hide">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2"/></svg>
+            </button>
+          </div>
+          <p class="setting-hint" id="apiKeyHint">Get your free key at <strong>aistudio.google.com</strong> → Get API Key<br/>Stored locally, never sent anywhere else.</p>
+        </div>
+
+        <div class="setting-group">
+          <label class="setting-label">Model</label>
+          <select id="modelSelect" class="select-input">
+            <option value="gemini-1.5-pro">Gemini 1.5 Pro ⭐ (your current plan)</option>
+            <option value="gemini-1.5-flash">Gemini 1.5 Flash (faster, free tier)</option>
+            <option value="gemini-2.0-flash">Gemini 2.0 Flash (latest, free tier)</option>
+            <option value="claude-haiku-4-5">Claude Haiku 4.5 (~$0.003/analysis)</option>
+            <option value="claude-sonnet-4-6">Claude Sonnet 4.6 (~$0.015/analysis)</option>
+          </select>
+        </div>
+
+        <button class="btn-sm btn-primary" id="btnSaveSettings" style="width:100%">Save Settings</button>
+      </div>
+
+      <!-- My Profile (for autofill) -->
+      <div class="settings-card">
+        <div class="section-title" style="margin-bottom:4px">
+          My Profile
+          <span class="autofill-badge">Autofill</span>
+        </div>
+        <p class="setting-hint" style="margin-bottom:10px">Stored locally. Used to fill job application forms automatically when you click "Auto-Fill Application".</p>
+        <div class="profile-grid">
+          <input type="text"  id="pFirstName"  placeholder="First name"          class="text-input" />
+          <input type="text"  id="pLastName"   placeholder="Last name"           class="text-input" />
+          <input type="email" id="pEmail"      placeholder="Email address"       class="text-input" />
+          <input type="tel"   id="pPhone"      placeholder="Phone number"        class="text-input" />
+          <input type="url"   id="pLinkedIn"   placeholder="LinkedIn URL"        class="text-input" />
+          <input type="url"   id="pGithub"     placeholder="GitHub URL"          class="text-input" />
+          <input type="url"   id="pPortfolio"  placeholder="Portfolio / Website" class="text-input" />
+          <input type="text"  id="pCity"       placeholder="City"                class="text-input" />
+          <input type="text"  id="pState"      placeholder="State / Province"    class="text-input" />
+          <input type="text"  id="pCountry"    placeholder="Country"             class="text-input" />
+          <input type="text"  id="pZip"        placeholder="ZIP / Postal code"   class="text-input" />
+          <input type="text"  id="pSalary"     placeholder="Salary expectation"  class="text-input" />
+        </div>
+        <input type="text" id="pAvailability" placeholder="Notice period / Availability (e.g. 2 weeks, Immediate)" class="text-input" style="margin-top:6px;width:100%" />
+      </div>
+
+      <!-- Pre-answered Questions -->
+      <div class="settings-card">
+        <div class="section-title" style="margin-bottom:4px">
+          Pre-answered Questions
+          <span class="autofill-badge">Autofill</span>
+        </div>
+        <p class="setting-hint" style="margin-bottom:10px">These fill textarea questions on application forms (cover letter, "why this role", etc.).</p>
+        <div class="setting-group">
+          <label class="setting-label">Why this role / company?</label>
+          <textarea id="paWhyRole" class="text-area" rows="3" placeholder="I'm excited about this opportunity because…"></textarea>
+        </div>
+        <div class="setting-group">
+          <label class="setting-label">Tell me about yourself</label>
+          <textarea id="paAboutMe" class="text-area" rows="3" placeholder="I'm a software engineer with X years of experience in…"></textarea>
+        </div>
+        <div class="setting-group">
+          <label class="setting-label">Greatest strength</label>
+          <textarea id="paStrength" class="text-area" rows="2" placeholder="My greatest strength is…"></textarea>
+        </div>
+        <div class="setting-group">
+          <label class="setting-label">Greatest weakness (and how you're working on it)</label>
+          <textarea id="paWeakness" class="text-area" rows="2" placeholder="An area I'm actively improving is…"></textarea>
+        </div>
+        <div class="setting-group">
+          <label class="setting-label">Default cover letter</label>
+          <textarea id="paCoverLetter" class="text-area" rows="6" placeholder="Dear Hiring Manager,&#10;&#10;I am excited to apply for…"></textarea>
+        </div>
+        <button class="btn-sm btn-primary" id="btnSaveProfile" style="width:100%;margin-top:8px">Save Profile &amp; Answers</button>
+      </div>
+
+      <div class="settings-card danger-zone">
+        <div class="section-title" style="color:#dc2626;margin-bottom:8px">Data Management</div>
+        <button class="btn-sm btn-ghost" id="btnExportData" style="width:100%;margin-bottom:8px">
+          Export All Data (JSON)
+        </button>
+        <button class="btn-sm btn-danger" id="btnClearData" style="width:100%">
+          Clear All Data
+        </button>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ── Toast notification ────────────────────── -->
+  <div class="toast hidden" id="toast"></div>
+
+  <!-- ── Modal for viewing full text ─────────────── -->
+  <div class="modal hidden" id="modal">
+    <div class="modal-overlay" id="modalOverlay"></div>
+    <div class="modal-box">
+      <div class="modal-header">
+        <span id="modalTitle">Details</span>
+        <button class="modal-close" id="modalClose">×</button>
+      </div>
+      <div class="modal-body" id="modalBody"></div>
+    </div>
+  </div>
+
+  <!-- PDF.js -->
+  <script src="../lib/pdf.min.js"></script>
+  <script src="sidepanel.js"></script>
+</body>
+</html>

@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>JobTrack AI</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="popup-header">
+    <div class="logo">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+        <rect x="9" y="3" width="6" height="4" rx="1" stroke="#fff" stroke-width="2"/>
+        <path d="M9 12h6M9 16h4" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+      <span>JobTrack AI</span>
+    </div>
+    <span class="version">v1.0</span>
+  </div>
+
+  <div class="popup-body">
+    <button class="btn-primary" id="btnOpenPanel">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor" stroke-width="2"/>
+        <path d="M15 3v18" stroke="currentColor" stroke-width="2"/>
+      </svg>
+      Open Side Panel
+    </button>
+
+    <div class="divider"><span>Quick Actions</span></div>
+
+    <button class="btn-secondary" id="btnCaptureJD">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+        <path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        <polyline points="16 6 12 2 8 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        <line x1="12" y1="2" x2="12" y2="15" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+      Capture JD from This Page
+    </button>
+
+    <div id="statusMsg" class="status-msg hidden"></div>
+
+    <div class="stats-row" id="statsRow">
+      <div class="stat">
+        <span class="stat-num" id="statResumes">–</span>
+        <span class="stat-label">Resumes</span>
+      </div>
+      <div class="stat">
+        <span class="stat-num" id="statJobs">–</span>
+        <span class="stat-label">Jobs</span>
+      </div>
+      <div class="stat">
+        <span class="stat-num" id="statApps">–</span>
+        <span class="stat-label">Applied</span>
+      </div>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

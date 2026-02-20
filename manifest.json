@@ -1,0 +1,99 @@
+{
+  "manifest_version": 3,
+  "name": "JobTrack AI – Resume & JD Analyzer",
+  "version": "1.0.0",
+  "description": "AI-powered job tracker: scan resumes vs JDs, get match scores, keyword gaps, improvements, cover letters & interview prep.",
+
+  "permissions": ["storage", "activeTab", "sidePanel", "scripting", "unlimitedStorage"],
+  "host_permissions": [
+    "https://api.anthropic.com/*",
+    "https://generativelanguage.googleapis.com/*"
+  ],
+
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    },
+    "default_title": "JobTrack AI"
+  },
+
+  "side_panel": {
+    "default_path": "sidepanel/sidepanel.html"
+  },
+
+  "background": {
+    "service_worker": "background/service_worker.js"
+  },
+
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.myworkdayjobs.com/*",
+        "https://myworkday.com/*",
+        "https://www.linkedin.com/jobs/*",
+        "https://linkedin.com/jobs/*",
+        "https://indeed.com/*",
+        "https://www.indeed.com/*",
+        "https://jobs.lever.co/*",
+        "https://boards.greenhouse.io/*",
+        "https://apply.greenhouse.io/*",
+        "https://*.greenhouse.io/*",
+        "https://*.glassdoor.com/job-listing/*",
+        "https://www.glassdoor.com/job-listing/*",
+        "https://www.naukri.com/*",
+        "https://apply.workable.com/*",
+        "https://*.workable.com/*",
+        "https://jobs.smartrecruiters.com/*",
+        "https://*.smartrecruiters.com/*",
+        "https://*.ashbyhq.com/*",
+        "https://jobs.ashbyhq.com/*",
+        "https://*.bamboohr.com/careers/*",
+        "https://*.bamboohr.com/jobs/*",
+        "https://*.breezy.hr/*",
+        "https://www.ziprecruiter.com/jobs/*",
+        "https://www.ziprecruiter.com/c/*",
+        "https://www.monster.com/job-openings/*",
+        "https://www.dice.com/jobs/*",
+        "https://weworkremotely.com/remote-jobs/*",
+        "https://weworkremotely.com/l/remote-jobs/*",
+        "https://remote.co/job/*",
+        "https://remotive.com/remote-jobs/*",
+        "https://*.jobvite.com/*",
+        "https://hire.jobvite.com/*",
+        "https://*.icims.com/jobs/*",
+        "https://*.taleo.net/*",
+        "https://*.successfactors.com/career-site/*",
+        "https://www.simplyhired.com/job/*",
+        "https://careers.google.com/*",
+        "https://jobs.apple.com/*",
+        "https://amazon.jobs/*",
+        "https://wellfound.com/jobs/*",
+        "https://www.workatastartup.com/jobs/*",
+        "https://*.rippling.com/jobs/*",
+        "https://*.rippling-ats.com/*",
+        "https://boards.eu.greenhouse.io/*",
+        "https://*.freshteam.com/*",
+        "https://*.recruitee.com/*",
+        "https://*.pinpointhq.com/*",
+        "https://otta.com/*",
+        "https://startup.jobs/*",
+        "https://www.builtinnyc.com/job/*",
+        "https://www.builtinchicago.org/job/*",
+        "https://www.builtinboston.com/job/*",
+        "https://builtin.com/job/*",
+        "https://*.lever.co/*"
+      ],
+      "js": ["content/content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
