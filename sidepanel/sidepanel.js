@@ -714,6 +714,7 @@ function renderJobs() {
 
   listEl.innerHTML = filtered.map(j => {
     const kws = extractKeywords(j.text).slice(0, 5);
+    const isApplied = state.applications.some(a => a.jobId === j.id && a.status === 'applied');
     const emailHtml = j.recruiterEmail
       ? `<div class="recruiter-email">
            <svg width="10" height="10" viewBox="0 0 24 24" fill="none"><rect x="2" y="4" width="20" height="16" rx="2" stroke="currentColor" stroke-width="2"/><path d="M2 7l10 7 10-7" stroke="currentColor" stroke-width="2"/></svg>
@@ -731,6 +732,9 @@ function renderJobs() {
       <div class="card-actions">
         <button class="btn-link" data-action="view-job" data-id="${j.id}">Full JD</button>
         <button class="btn-link green" data-action="analyze-job" data-id="${j.id}">Analyze</button>
+        ${isApplied
+          ? `<span style="color:var(--success);font-size:11px;font-weight:600">✓ Applied</span>`
+          : `<button class="btn-link" data-action="mark-applied-job" data-id="${j.id}">Mark Applied</button>`}
         <button class="btn-link danger" data-action="delete-job" data-id="${j.id}">Delete</button>
       </div>
     </div>`;
@@ -748,6 +752,18 @@ window.deleteJob = async (id) => {
   await save(SK.JOBS, state.jobs);
   renderJobs();
   toast('Job deleted');
+};
+
+window.markJobAppliedFromList = async (id) => {
+  const alreadyApplied = state.applications.some(a => a.jobId === id && a.status === 'applied');
+  if (alreadyApplied) { toast('Already marked as applied', 'error', 2000); return; }
+  const job = state.jobs.find(j => j.id === id);
+  const app = { id: uid(), jobId: id, resumeId: '', status: 'applied', notes: '', date: new Date().toISOString() };
+  state.applications.push(app);
+  await save(SK.APPLICATIONS, state.applications);
+  toast(`✓ Marked as Applied: "${job ? job.title : ''}"`, 'success', 3000);
+  renderJobs();
+  renderDashboard();
 };
 
 window.analyzeWith = (jobId) => {
@@ -1517,9 +1533,10 @@ function wireEvents() {
     if (!btn) return;
     const action = btn.dataset.action;
     const id = btn.dataset.id;
-    if (action === 'view-job')    window.viewJob(id);
-    if (action === 'analyze-job') window.analyzeWith(id);
-    if (action === 'delete-job')  window.deleteJob(id);
+    if (action === 'view-job')        window.viewJob(id);
+    if (action === 'analyze-job')     window.analyzeWith(id);
+    if (action === 'delete-job')      window.deleteJob(id);
+    if (action === 'mark-applied-job') window.markJobAppliedFromList(id);
   });
 
   // Tracker board
