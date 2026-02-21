@@ -23,7 +23,7 @@ const state = {
   jobs: [],
   applications: [],
   analyses: {},
-  settings:       { apiKey: '', provider: 'gemini', model: 'gemini-1.5-pro' },
+  settings:       { apiKey: '', provider: 'gemini', model: 'gemini-2.0-flash' },
   profile:        { firstName:'', lastName:'', email:'', phone:'', linkedin:'', github:'', portfolio:'', city:'', state:'', country:'', zipCode:'', salary:'', availability:'' },
   preAnswers:     { whyThisRole:'', aboutMe:'', strength:'', weakness:'', coverLetter:'' },
   profiles:       [],
@@ -38,7 +38,7 @@ async function loadAll() {
   state.jobs         = data[SK.JOBS]         || [];
   state.applications = data[SK.APPLICATIONS] || [];
   state.analyses     = data[SK.ANALYSES]     || {};
-  state.settings     = { apiKey: '', provider: 'gemini', model: 'gemini-1.5-pro', ...(data[SK.SETTINGS] || {}) };
+  state.settings     = { apiKey: '', provider: 'gemini', model: 'gemini-2.0-flash', ...(data[SK.SETTINGS] || {}) };
 
   let profiles       = data[SK.PROFILES]       || [];
   let activeProfileId = data[SK.ACTIVE_PROFILE] || '';
@@ -305,7 +305,7 @@ async function callAI(userMsg, systemMsg = '') {
 }
 
 async function callGemini(userMsg, systemMsg, apiKey, model) {
-  const modelId = model || 'gemini-1.5-pro';
+  const modelId = model || 'gemini-2.0-flash';
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`;
 
   const body = {
@@ -869,6 +869,20 @@ window.markJobAppliedFromList = (id) => {
   showHtmlModal('📤 Mark as Applied', html);
 };
 
+window.confirmResumeForApp = async (appId) => {
+  const resumeId = (document.getElementById('autoApplyResumeSelect') || {}).value || '';
+  const app = state.applications.find(a => a.id === appId);
+  if (app && resumeId) {
+    app.resumeId = resumeId;
+    await save(SK.APPLICATIONS, state.applications);
+    const resume = state.resumes.find(r => r.id === resumeId);
+    toast(`Resume "${resume ? resume.name : ''}" linked!`, 'success', 2000);
+    renderTracker();
+    renderDashboard();
+  }
+  closeModal();
+};
+
 window.confirmMarkApplied = async (jobId) => {
   const resumeId = (document.getElementById('appliedResumeSelect') || {}).value || '';
   const job    = state.jobs.find(j => j.id === jobId);
@@ -1356,7 +1370,7 @@ function renderSettings() {
 
   document.getElementById('apiKeyInput').value    = apiKey   || '';
   document.getElementById('providerSelect').value = provider || 'gemini';
-  document.getElementById('modelSelect').value    = model    || 'gemini-1.5-pro';
+  document.getElementById('modelSelect').value    = model    || 'gemini-2.0-flash';
   updateProviderHint(provider || 'gemini');
 
   // Profile fields
@@ -1393,7 +1407,7 @@ function updateProviderHint(provider) {
     [...modelSel.options].forEach(o => {
       o.hidden = !o.value.startsWith('gemini');
     });
-    if (!modelSel.value.startsWith('gemini')) modelSel.value = 'gemini-1.5-pro';
+    if (!modelSel.value.startsWith('gemini')) modelSel.value = 'gemini-2.0-flash';
   } else {
     hint.innerHTML = 'Get your key at <strong>platform.claude.com</strong> → API Keys<br/>Stored locally, never sent anywhere else.';
     // Show only Claude models
@@ -1698,13 +1712,19 @@ function wireEvents() {
     if (btn) switchActiveProfile(btn.dataset.profileId);
   });
 
-  // Modal (for Add Note and confirm-mark-applied buttons)
+  // Modal (for Add Note, confirm-mark-applied, confirm-resume-for-app)
   document.getElementById('modal').addEventListener('click', (e) => {
     const addNote = e.target.closest('[data-action="add-note"]');
     if (addNote) window.addAppNote(addNote.dataset.id);
 
     const confirmApply = e.target.closest('[data-action="confirm-mark-applied"]');
     if (confirmApply) window.confirmMarkApplied(confirmApply.dataset.jobId);
+
+    const confirmResume = e.target.closest('[data-action="confirm-resume-for-app"]');
+    if (confirmResume) window.confirmResumeForApp(confirmResume.dataset.appId);
+
+    const closeBtn = e.target.closest('[data-action="close-modal-btn"]');
+    if (closeBtn) closeModal();
   });
 
   // ── Listen for messages from popup / background ───────────────────
@@ -1729,9 +1749,32 @@ function wireEvents() {
     if (msg.type === 'JOB_MARKED_APPLIED') {
       chrome.storage.local.get(SK.APPLICATIONS).then(data => {
         state.applications = data[SK.APPLICATIONS] || [];
-        toast(`✓ Auto-marked as Applied: "${escHtml(msg.title)} at ${escHtml(msg.company)}"`, 'success', 5000);
         renderDashboard();
         renderTracker();
+
+        // Show resume picker so the user can link which resume they applied with
+        const job = state.jobs.find(j => j.id === msg.jobId);
+        const resumeOptions = state.resumes.length
+          ? state.resumes.map(r => `<option value="${r.id}">${escHtml(r.name)}</option>`).join('')
+          : '';
+        showHtmlModal('📤 Application Recorded', `
+          <div style="margin-bottom:12px;padding:10px;background:var(--success-light);border-radius:8px;border-left:3px solid var(--success)">
+            <div style="font-weight:700;font-size:12px;color:var(--success);margin-bottom:2px">✓ Marked as Applied!</div>
+            <div style="font-weight:600;font-size:13px">${escHtml(job ? job.title : msg.title)}</div>
+            <div style="font-size:12px;color:var(--text-2)">${escHtml(job ? job.company : msg.company)}</div>
+          </div>
+          <label style="font-size:12px;font-weight:600;color:var(--text-2);display:block;margin-bottom:6px">
+            Which resume did you apply with?
+          </label>
+          <select id="autoApplyResumeSelect" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:13px;margin-bottom:14px;background:var(--bg)">
+            <option value="">— Skip / No resume —</option>
+            ${resumeOptions}
+          </select>
+          <div style="display:flex;gap:8px">
+            <button class="btn-sm btn-primary" style="flex:1" data-action="confirm-resume-for-app" data-app-id="${msg.appId}">Save</button>
+            <button class="btn-sm btn-ghost" style="flex:1" data-action="close-modal-btn">Skip</button>
+          </div>
+        `);
       });
     }
   });

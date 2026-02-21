@@ -125,7 +125,7 @@ async function handleApplyClick(data, tab) {
 
   setBadge(tab.id, '✓', '#059669');
   chrome.runtime.sendMessage({
-    type: 'JOB_MARKED_APPLIED', jobId: job.id, title: job.title, company: job.company
+    type: 'JOB_MARKED_APPLIED', jobId: job.id, appId: newApp.id, title: job.title, company: job.company
   }).catch(() => {});
 }
 
