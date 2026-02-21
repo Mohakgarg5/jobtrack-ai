@@ -65,12 +65,37 @@ async function loadAll() {
     });
   }
 
-  state.profiles       = profiles;
+  state.profiles        = profiles;
   state.activeProfileId = activeProfileId || (profiles[0] && profiles[0].id) || '';
+
+  // ── Migrate legacy global jt_resumes into the first profile (one-time) ──
+  const globalResumes = data[SK.RESUMES] || [];
+  if (globalResumes.length > 0) {
+    let changed = false;
+    const firstP = profiles[0];
+    if (firstP && !firstP.resumes) {
+      firstP.resumes = globalResumes;
+      changed = true;
+    }
+    if (changed) {
+      await chrome.storage.local.set({ [SK.PROFILES]: profiles });
+      await chrome.storage.local.remove(SK.RESUMES); // Remove old global key
+    }
+  }
+
   syncActiveProfileToState();
 }
 
 const save = async (key, val) => chrome.storage.local.set({ [key]: val });
+
+// Saves current profile's resumes back into the profiles array and persists it.
+// Call this wherever you previously called save(SK.RESUMES, state.resumes).
+async function saveResumes() {
+  const p = state.profiles.find(x => x.id === state.activeProfileId) || state.profiles[0];
+  if (!p) return;
+  p.resumes = state.resumes;
+  await save(SK.PROFILES, state.profiles);
+}
 
 // ── Profile helpers ───────────────────────────────────────────────────
 function syncActiveProfileToState() {
@@ -97,6 +122,8 @@ function syncActiveProfileToState() {
     weakness:     p.weakness     || '',
     coverLetter:  p.coverLetter  || ''
   };
+  // Each profile has its own resume list
+  state.resumes = p.resumes || [];
   // Keep legacy keys in sync so content script autofill still works
   chrome.storage.local.set({
     [SK.PROFILE]:     state.profile,
@@ -122,9 +149,14 @@ async function switchActiveProfile(profileId) {
   if (!p) return;
   state.activeProfileId = profileId;
   await save(SK.ACTIVE_PROFILE, profileId);
-  syncActiveProfileToState();
+  syncActiveProfileToState(); // loads this profile's resumes into state.resumes
   renderProfileBar();
-  if (state.activeTab === 'settings') renderSettings();
+  renderDashboard();
+  // Re-render any tab that shows profile-specific data
+  const t = state.activeTab;
+  if (t === 'resumes')   renderResumes();
+  if (t === 'analyze')   renderAnalyze();
+  if (t === 'settings')  renderSettings();
   toast(`Switched to ${escHtml(p.displayName)}`, 'success', 2000);
 }
 
@@ -233,60 +265,516 @@ async function extractTextFromPDF(file) {
 }
 
 // ═════════════════════════════════════════════════════════════════════
-// LOCAL KEYWORD ANALYSIS (Free – no API call)
+// LOCAL KEYWORD ANALYSIS — ATS-Grade (Free · No API call)
 // ═════════════════════════════════════════════════════════════════════
 
-const TECH_KEYWORDS = [
+// ── Stop words: carry no discriminating signal ────────────────────────
+const STOP_WORDS = new Set([
+  'a','an','the','and','or','but','in','on','at','to','for','of','with','by','from',
+  'up','into','through','during','before','after','above','below','between',
+  'each','few','more','most','other','some','such','than','then','these','they',
+  'this','those','very','will','have','has','had','was','were','been','be',
+  'do','does','did','would','could','should','may','might','shall','can',
+  'our','your','their','its','we','you','he','she','it','is','are','am',
+  'also','just','only','even','so','too','yet','still','both','either',
+  // Job-posting filler words
+  'experience','years','required','preferred','minimum','strong','knowledge',
+  'ability','skills','team','work','role','position','candidate','company',
+  'opportunity','environment','including','related','plus','etc',
+  'looking','seeking','hire','join','help','great','good','well','high','large',
+  'small','new','must','build','drive','define','own','lead','manage',
+  'ensure','support','partner','develop','across','within','focus','responsible',
+  'proven','track','record','degree','bachelor','master','phd','certification',
+  'equivalent','similar','relevant','understand','working','collaborate',
+  'communicate','problem','solution','impact','create','maintain','provide',
+  'implement','utilize','leverage','demonstrate','about','after','need',
+  'over','should','through','under','what','when','where','which','while',
+  'with','would','your','into','able','have','here','know','like','make',
+  'much','only','other','their','them','there','will','also','just',
+  'not','but','all','any','can','its','was','has','had','are','been',
+  'being','both','could','even','from','some','than','that','them','then',
+  'these','they','this','very','which','would','using','used','use'
+]);
+
+// ── Synonym / alias map ────────────────────────────────────────────────
+// Normalises abbreviations → canonical form so "k8s" matches "kubernetes",
+// "PM" matches "product manager", etc. Applied to both resume and JD before comparison.
+// Keys must be lowercase single tokens or short phrases.
+const SYNONYMS = {
   // Languages
-  'python','javascript','typescript','java','golang','go','rust','swift','kotlin','scala','php','ruby',
-  'c++','c#','c','r','matlab','perl','bash','shell','powershell','sql','html','css','sass','less',
-  // Frontend
-  'react','angular','vue','vue.js','next.js','nuxt','svelte','redux','mobx','graphql','webpack','vite',
-  'tailwind','bootstrap','jquery','d3.js','three.js','webgl','pwa',
-  // Backend
-  'node.js','express','django','flask','fastapi','spring','spring boot','rails','laravel','asp.net',
-  'rest api','restful','grpc','websocket','microservices','serverless','rabbitmq','kafka',
+  'js': 'javascript', 'ts': 'typescript', 'py': 'python', 'rb': 'ruby',
+  'c sharp': 'c#', 'node': 'node.js', 'nodejs': 'node.js', 'node js': 'node.js',
+  'reactjs': 'react', 'react.js': 'react', 'vuejs': 'vue', 'vue.js': 'vue',
+  'angularjs': 'angular', 'angular.js': 'angular', 'nextjs': 'next.js',
+  'golang': 'go',
+  // Cloud / DevOps
+  'amazon web services': 'aws', 'google cloud platform': 'gcp',
+  'google cloud': 'gcp', 'microsoft azure': 'azure',
+  'k8s': 'kubernetes', 'kube': 'kubernetes', 'k8': 'kubernetes',
+  'docker container': 'docker',
+  'ci cd': 'ci/cd', 'cicd': 'ci/cd',
+  'continuous integration': 'ci/cd', 'continuous deployment': 'ci/cd',
+  'continuous delivery': 'ci/cd', 'infrastructure as code': 'iac',
+  'github action': 'github actions',
   // Databases
-  'postgresql','mysql','sqlite','mongodb','redis','elasticsearch','cassandra','dynamodb','firebase',
-  'neo4j','influxdb','bigquery','snowflake','data warehouse','etl','data pipeline','data modeling',
-  // DevOps / Cloud
-  'docker','kubernetes','aws','amazon web services','gcp','google cloud','azure','microsoft azure',
-  'terraform','ansible','jenkins','ci/cd','github actions','circleci','helm','nginx','linux','unix',
+  'postgres': 'postgresql', 'mongo': 'mongodb', 'elastic': 'elasticsearch',
   // AI / ML
-  'machine learning','deep learning','nlp','natural language processing','computer vision',
-  'tensorflow','pytorch','scikit-learn','pandas','numpy','scipy','keras','huggingface',
-  'llm','generative ai','openai','langchain','mlflow','data science','feature engineering',
+  'ml': 'machine learning', 'dl': 'deep learning',
+  'genai': 'generative ai', 'gen ai': 'generative ai',
+  'llms': 'llm', 'large language model': 'llm', 'large language models': 'llm',
+  'nlp': 'natural language processing', 'cv': 'computer vision',
+  'hugging face': 'huggingface', 'hf': 'huggingface',
+  // Product / PM roles
+  'pm': 'product manager', 'pgm': 'program manager',
+  'tpm': 'technical program manager', 'apm': 'associate product manager',
+  'po': 'product owner',
+  'gtm': 'go-to-market', 'go to market': 'go-to-market',
+  'prd': 'product requirements document',
+  'mvp': 'minimum viable product', 'jtbd': 'jobs to be done',
+  // Program / Project
+  'pmo': 'project management office', 'pmp': 'project management professional',
+  'wbs': 'work breakdown structure',
+  // Metrics / Business
+  'kpi': 'kpis', 'okr': 'okrs',
+  'nps': 'net promoter score', 'csat': 'customer satisfaction score',
+  'dau': 'daily active users', 'mau': 'monthly active users',
+  'arr': 'annual recurring revenue', 'mrr': 'monthly recurring revenue',
+  'ltv': 'lifetime value', 'cac': 'customer acquisition cost',
+  'roi': 'return on investment',
+  // Business model
+  'saas': 'software as a service', 'b2b': 'business-to-business',
+  'b2c': 'business-to-consumer',
+  // CRM / Tools
+  'sfdc': 'salesforce', 'gh': 'github', 'gl': 'gitlab',
+  // Design
+  'ux': 'user experience', 'ui': 'user interface',
+  // Marketing
+  'sem': 'search engine marketing', 'seo': 'search engine optimization',
+  'cro': 'conversion rate optimization'
+};
+
+// ── Role taxonomy: each role has canonical titles + distinctive vocabulary ──
+// Titles are weighted 5× more than distinctive phrases in detectRole().
+// Distinctive phrases are things that ONLY appear in that role — not generic words.
+const ROLE_TAXONOMY = {
+  product_manager: {
+    titles: [
+      'product manager','product owner','head of product','director of product',
+      'vp of product','vp product','chief product officer','cpo',
+      'group product manager','senior product manager','associate product manager',
+      'apm','product lead','product management lead'
+    ],
+    distinctive: [
+      'product roadmap','product strategy','product vision','product discovery',
+      'user stories','user research','customer discovery','go-to-market','gtm strategy',
+      'product metrics','product launch','feature prioritization','product requirements',
+      'prd','mvp','minimum viable product','product-market fit','north star metric',
+      'product led growth','plg','product backlog','product thinking','product sense',
+      'customer interviews','customer feedback','product adoption','product analytics',
+      'activation rate','churn rate','nps','csat','product positioning',
+      'competitive analysis','market sizing','pricing strategy','product lifecycle',
+      'product operations','growth metrics','retention metrics','user acquisition',
+      'product brief','jobs to be done','jtbd','product specification',
+      'acceptance criteria','feature roadmap','release roadmap','beta testing',
+      'product strategy','product opportunity','market opportunity','value proposition'
+    ]
+  },
+  program_manager: {
+    titles: [
+      'program manager','technical program manager','tpm','project manager',
+      'delivery manager','portfolio manager','pmo director','program lead',
+      'program management office','pmo','project management professional','pmp',
+      'project delivery manager','it project manager','engineering program manager',
+      'senior program manager','associate program manager','program coordinator'
+    ],
+    distinctive: [
+      'program management','project delivery','milestone tracking','resource allocation',
+      'risk mitigation','program governance','delivery management','project timeline',
+      'budget management','project planning','capacity planning','dependency management',
+      'waterfall methodology','project execution','project portfolio','program roadmap',
+      'project status report','escalation management','issue log','project risk register',
+      'executive reporting','steering committee','project charter',
+      'project scope','change management','program delivery','work breakdown structure',
+      'wbs','critical path','resource leveling','earned value management',
+      'project kickoff','lessons learned','project closure','schedule management',
+      'cost baseline','project governance','program oversight','intake process',
+      'cross-functional delivery','delivery cadence','operational excellence'
+    ]
+  },
+  software_engineer: {
+    titles: [
+      'software engineer','software developer','swe','backend engineer',
+      'frontend engineer','full stack engineer','fullstack engineer','full-stack engineer',
+      'staff engineer','principal engineer','senior engineer','junior engineer',
+      'web developer','application developer','systems engineer','platform engineer'
+    ],
+    distinctive: [
+      'software development','system design','code review','api design',
+      'software architecture','technical design','object oriented programming',
+      'functional programming','design patterns','refactoring','technical debt',
+      'scalability','performance optimization','debugging','unit tests',
+      'test driven development','build pipelines','distributed systems',
+      'low latency','high throughput','fault tolerant','production systems',
+      'microservice architecture','monolith','service oriented architecture'
+    ]
+  },
+  data_scientist: {
+    titles: [
+      'data scientist','ml engineer','machine learning engineer','ai engineer',
+      'research scientist','applied scientist','quantitative researcher','statistician',
+      'ai researcher','nlp engineer','computer vision engineer'
+    ],
+    distinctive: [
+      'machine learning','deep learning','statistical modeling','predictive modeling',
+      'feature engineering','model training','model deployment','neural networks',
+      'natural language processing','computer vision','reinforcement learning',
+      'hypothesis testing','regression analysis','classification model',
+      'clustering','random forest','gradient boosting','transformer models',
+      'model evaluation','model accuracy','precision recall','roc auc',
+      'experiment design','causal inference','bayesian inference'
+    ]
+  },
+  data_analyst: {
+    titles: [
+      'data analyst','business analyst','analytics engineer','bi analyst',
+      'business intelligence analyst','reporting analyst','marketing analyst',
+      'financial analyst','operations analyst','strategy analyst','insights analyst'
+    ],
+    distinctive: [
+      'data analysis','business intelligence','data visualization','dashboard creation',
+      'sql queries','data insights','kpi tracking','business reporting',
+      'metrics analysis','ad hoc analysis','data storytelling','pivot tables',
+      'looker','tableau','power bi','data studio','statistical analysis',
+      'trend analysis','variance analysis','root cause analysis','business metrics'
+    ]
+  },
+  designer: {
+    titles: [
+      'ux designer','ui designer','product designer','interaction designer',
+      'visual designer','design lead','ux researcher','design director',
+      'brand designer','graphic designer','motion designer','experience designer'
+    ],
+    distinctive: [
+      'user experience','wireframing','prototyping','design systems',
+      'usability testing','design thinking','information architecture',
+      'user flows','design sprint','visual design','interaction design',
+      'accessibility design','figma','sketch','adobe xd','user personas',
+      'journey mapping','heuristic evaluation','design critique','design handoff'
+    ]
+  },
+  devops: {
+    titles: [
+      'devops engineer','site reliability engineer','sre','platform engineer',
+      'cloud engineer','infrastructure engineer','devsecops','cloud architect',
+      'systems administrator','network engineer','reliability engineer'
+    ],
+    distinctive: [
+      'continuous integration','continuous deployment','infrastructure as code',
+      'container orchestration','cloud infrastructure','monitoring','observability',
+      'incident management','on-call rotation','terraform','ansible',
+      'helm charts','service mesh','load balancing','disaster recovery',
+      'availability','reliability','latency slo','error budget','runbook'
+    ]
+  },
+  marketing: {
+    titles: [
+      'marketing manager','growth manager','demand generation','brand manager',
+      'content manager','digital marketing manager','marketing director',
+      'performance marketing','product marketing manager','pmm','field marketing',
+      'marketing lead','vp marketing','chief marketing officer','cmo'
+    ],
+    distinctive: [
+      'marketing strategy','brand awareness','lead generation','demand generation',
+      'content marketing','email marketing','social media','paid advertising',
+      'sem','google ads','facebook ads','conversion rate optimization',
+      'marketing qualified lead','mql','sales qualified lead','sql pipeline',
+      'campaign management','marketing automation','hubspot','marketo',
+      'customer acquisition cost','cac','lifetime value','ltv','attribution model',
+      'brand positioning','messaging framework','go to market execution'
+    ]
+  },
+  sales: {
+    titles: [
+      'account executive','sales manager','sales director','business development',
+      'sales representative','account manager','customer success manager',
+      'revenue manager','vp sales','chief revenue officer','cro','inside sales',
+      'enterprise sales','solution engineer','sales engineer'
+    ],
+    distinctive: [
+      'quota attainment','pipeline management','revenue generation','deal closing',
+      'outbound prospecting','account management','customer retention','upselling',
+      'cross-selling','sales cycle','enterprise sales','smb sales',
+      'solution selling','consultative selling','annual recurring revenue','arr',
+      'monthly recurring revenue','mrr','net revenue retention','nrr',
+      'sales playbook','discovery call','proof of concept','procurement','rfp'
+    ]
+  }
+};
+
+// ── Comprehensive skills list (used for keyword display panel) ────────
+const ALL_SKILLS = [
+  // Languages
+  'python','javascript','typescript','java','go','rust','swift','kotlin','scala',
+  'php','ruby','c++','c#','c','matlab','perl','bash','shell','powershell',
+  'sql','html','css','sass','r','dart','elixir','haskell','lua',
+  // Frontend
+  'react','angular','vue','next.js','nuxt','svelte','redux','mobx','graphql',
+  'webpack','vite','tailwind','bootstrap','jquery','d3.js','webgl','pwa',
+  'storybook','playwright','testing library',
+  // Backend
+  'node.js','express','django','flask','fastapi','spring boot','rails','laravel',
+  'asp.net','rest api','restful','grpc','websocket','microservices','serverless',
+  'rabbitmq','kafka','celery','nginx',
+  // Databases
+  'postgresql','mysql','sqlite','mongodb','redis','elasticsearch','cassandra',
+  'dynamodb','firebase','neo4j','bigquery','snowflake','redshift',
+  'data warehouse','etl','data pipeline','dbt','airflow',
+  // DevOps / Cloud
+  'docker','kubernetes','aws','gcp','azure','terraform','ansible','jenkins',
+  'ci/cd','github actions','circleci','helm','linux','bash scripting',
+  'cloudformation','datadog','grafana','prometheus','pagerduty',
+  'observability','site reliability','iac',
+  // AI / ML / Data Science
+  'machine learning','deep learning','natural language processing','computer vision',
+  'tensorflow','pytorch','scikit-learn','pandas','numpy','scipy','keras',
+  'huggingface','llm','generative ai','langchain','mlflow','data science',
+  'feature engineering','model deployment','mlops','rag','fine-tuning',
+  'prompt engineering','openai','vertex ai',
+  'statistical modeling','regression','classification','clustering',
+  'time series','reinforcement learning',
+  // Data Analytics / BI
+  'tableau','power bi','looker','data studio','excel','analytics',
+  'business intelligence','data visualization','dashboard','reporting',
+  'a/b testing','mixpanel','amplitude','segment',
+  // Product Management
+  'product roadmap','product strategy','product vision','product discovery',
+  'user stories','user research','customer discovery','go-to-market',
+  'product metrics','product launch','feature prioritization','minimum viable product',
+  'product requirements document','product-market fit','north star metric',
+  'product led growth','product backlog','customer interviews',
+  'jobs to be done','product positioning','competitive analysis','market sizing',
+  'pricing strategy','product lifecycle','product analytics',
+  'net promoter score','customer satisfaction score','retention metrics',
+  'sprint planning','release planning','annual recurring revenue','monthly recurring revenue',
+  // Program / Project Management
+  'program management','project delivery','milestone tracking','resource allocation',
+  'risk mitigation','program governance','delivery management','project timeline',
+  'budget management','project planning','capacity planning','dependency management',
+  'waterfall','project execution','project portfolio','work breakdown structure',
+  'critical path','project status report','escalation management','change management',
+  'earned value management','project charter','project management office',
+  'project management professional',
+  // Design / UX
+  'user experience','user interface','wireframing','prototyping','design systems',
+  'usability testing','design thinking','information architecture','user flows',
+  'figma','sketch','adobe xd','journey mapping','accessibility',
+  // Leadership / Process
+  'leadership','team management','mentoring','stakeholder management',
+  'cross-functional','executive communication','performance management',
+  'agile','scrum','kanban','lean','tdd','code review','pair programming',
+  'retrospective','sprint','backlog grooming','velocity',
+  // Marketing / Growth
+  'search engine optimization','search engine marketing','digital marketing','content marketing',
+  'email marketing','social media marketing','demand generation','brand management',
+  'product marketing','conversion rate optimization','google ads','facebook ads',
+  'customer acquisition cost','lifetime value','marketing automation','hubspot','marketo',
+  // Sales / Business
+  'business development','account management','customer success','pipeline management',
+  'quota attainment','revenue generation','deal closing','salesforce',
+  'enterprise sales','solution selling','customer retention',
   // Tools
-  'git','github','gitlab','jira','confluence','figma','sketch','postman','swagger','grafana',
-  'datadog','sentry','tableau','power bi','excel','looker','dbt',
-  // Practices
-  'agile','scrum','kanban','tdd','bdd','ci/cd','devops','sre','code review','pair programming',
-  'unit testing','integration testing','api testing','selenium','cypress','jest','pytest',
-  // Soft skills
-  'leadership','communication','collaboration','problem-solving','critical thinking','time management',
-  'project management','product management','stakeholder management','cross-functional','mentoring',
+  'git','github','gitlab','jira','confluence','notion','slack','asana',
+  'postman','swagger','sentry',
   // Domains
-  'fintech','healthtech','saas','b2b','b2c','e-commerce','mobile','ios','android','blockchain',
-  'cybersecurity','cloud computing','distributed systems','system design','architecture','api design',
-  'ux','user experience','ui','a/b testing','analytics','seo','digital marketing','growth'
+  'fintech','healthtech','edtech','saas','b2b','b2c','e-commerce','mobile',
+  'ios','android','blockchain','cybersecurity','cloud computing',
+  'distributed systems','system design','api design','platform engineering'
 ];
 
-function extractKeywords(text) {
-  const lower = text.toLowerCase();
-  const found = new Set();
-  for (const kw of TECH_KEYWORDS) {
-    if (lower.includes(kw)) found.add(kw);
+// ── Text normaliser — applies synonym expansion ────────────────────────
+// Sorted by key length descending so longer aliases don't get partially replaced.
+const _sortedSynonyms = Object.entries(SYNONYMS).sort((a, b) => b[0].length - a[0].length);
+function normalizeText(text) {
+  let t = text.toLowerCase();
+  for (const [alias, canonical] of _sortedSynonyms) {
+    t = t.replace(new RegExp('\\b' + alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'g'), canonical);
   }
-  return [...found];
+  return t;
 }
 
+// ── JD section parser — splits required vs preferred ─────────────────
+// Required keywords will be weighted 2× in the ATS score.
+function parseJDSections(jdText) {
+  const lines = jdText.split('\n');
+  const required = [], preferred = [];
+  let mode = 'required';
+  for (const line of lines) {
+    const ll = line.toLowerCase();
+    if (/nice.to.have|preferred|bonus|plus\b|desired|ideally|optionally/i.test(ll)) mode = 'preferred';
+    else if (/required|must.have|minimum|basic qualifications|responsibilities|requirements|you (must|will|have|bring)/i.test(ll)) mode = 'required';
+    (mode === 'preferred' ? preferred : required).push(line);
+  }
+  return { required: required.join('\n'), preferred: preferred.join('\n') };
+}
+
+// ── Skill extractor — returns { skill: count } frequency map ─────────
+function extractSkillFreq(text) {
+  const norm = normalizeText(text);
+  const freq = {};
+  for (const skill of ALL_SKILLS) {
+    const ns      = normalizeText(skill);
+    const escaped = ns.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const m       = norm.match(new RegExp('\\b' + escaped + '\\b', 'g'));
+    if (m) freq[skill] = m.length;
+  }
+  return freq;
+}
+
+// ── extractKeywords — thin wrapper used by job card tags ─────────────
+function extractKeywords(text) {
+  return Object.keys(extractSkillFreq(text));
+}
+
+// ── Role detector ─────────────────────────────────────────────────────
+function detectRole(text) {
+  const norm = normalizeText(text);
+  let bestRole = null, bestScore = 0;
+  for (const [role, data] of Object.entries(ROLE_TAXONOMY)) {
+    let score = 0;
+    for (const title   of data.titles)      { if (norm.includes(title))  score += 5; }
+    for (const phrase  of data.distinctive) { if (norm.includes(phrase)) score += 1; }
+    if (score > bestScore) { bestScore = score; bestRole = role; }
+  }
+  return { role: bestRole, confidence: bestScore };
+}
+
+// ── Bigram extractor ─────────────────────────────────────────────────
+function extractBigrams(text) {
+  const words = normalizeText(text).replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length > 1);
+  const bigrams = new Set();
+  for (let i = 0; i < words.length - 1; i++) {
+    const a = words[i], b = words[i + 1];
+    if (a.length > 2 && b.length > 2 && (!STOP_WORDS.has(a) || !STOP_WORDS.has(b))) {
+      bigrams.add(a + ' ' + b);
+    }
+  }
+  return bigrams;
+}
+
+// ── getLocalMatch — keyword display panel (present / missing lists) ───
+// Uses synonym normalisation + required/preferred weighting.
+// Score is weighted: required skills count 2×, preferred 1×.
 function getLocalMatch(resumeText, jdText) {
-  const jdKws    = new Set(extractKeywords(jdText));
-  const resumeKws = new Set(extractKeywords(resumeText));
-  const present  = [...jdKws].filter(k => resumeKws.has(k));
-  const missing  = [...jdKws].filter(k => !resumeKws.has(k));
-  const score    = jdKws.size > 0 ? Math.round((present.length / jdKws.size) * 100) : 0;
-  return { present, missing, score, total: jdKws.size };
+  const normResume = normalizeText(resumeText);
+  const { required, preferred } = parseJDSections(jdText);
+  const reqFreq    = extractSkillFreq(required || jdText);
+  const prefFreq   = extractSkillFreq(preferred || '');
+  const prefSet    = new Set(Object.keys(prefFreq));
+
+  const present = [], missing = [];
+  let earned = 0, total = 0;
+
+  // Score required skills (weight 2)
+  for (const skill of Object.keys(reqFreq)) {
+    const ns      = normalizeText(skill);
+    const escaped = ns.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const found   = new RegExp('\\b' + escaped + '\\b').test(normResume);
+    total  += 2;
+    if (found) { present.push(skill); earned += 2; }
+    else        { missing.push(skill); }
+  }
+  // Score preferred skills (weight 1) — only those not already in required
+  for (const skill of Object.keys(prefFreq)) {
+    if (reqFreq[skill]) continue; // already counted
+    const ns      = normalizeText(skill);
+    const escaped = ns.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const found   = new RegExp('\\b' + escaped + '\\b').test(normResume);
+    total  += 1;
+    if (found) { present.push(skill + ' ✦'); earned += 1; }
+    else        { missing.push(skill + ' ✦'); }
+  }
+
+  const score = total > 0 ? Math.round((earned / total) * 100) : 0;
+  return { present, missing, score, total: present.length + missing.length };
+}
+
+// ── computeResumeJobScore — ATS-grade scorer for resume auto-selection ─
+//
+//  Factor 1 — Role category match          (40%)
+//    Detects the role the JD targets and checks if the resume targets the same.
+//    Same role → 100.  Different role → 0.  Unknown → 50 (neutral).
+//
+//  Factor 2 — Required keyword coverage    (30%)
+//    % of JD's required-section skills found in resume (with synonym expansion).
+//    Required skills count 2× preferred in the denominator.
+//
+//  Factor 3 — Distinctive phrase coverage  (20%)
+//    % of the JD role's signature phrases found in the resume.
+//    Phrases chosen specifically to distinguish similar roles (PM vs PgM, etc.)
+//
+//  Factor 4 — Canonical role title present  (7%)
+//    Does the resume explicitly contain any known title for this role?
+//
+//  Factor 5 — Bigram phrase overlap         (3%)
+//    2-word phrase similarity; catches compound role-specific terms.
+//
+function computeResumeJobScore(resumeText, jdText, jobTitle) {
+  const normResume = normalizeText(resumeText);
+  const normJd     = normalizeText(`${jobTitle || ''} ${jdText}`);
+
+  // Factor 1: Role category match (40%)
+  const jdRole     = detectRole(normJd);
+  const resumeRole = detectRole(normResume);
+  let roleMatchScore;
+  if (!jdRole.role || !resumeRole.role) roleMatchScore = 50;
+  else if (jdRole.role === resumeRole.role)  roleMatchScore = 100;
+  else                                        roleMatchScore = 0;
+
+  // Factor 2: Required keyword coverage (30%)
+  const { required } = parseJDSections(jdText);
+  const reqFreq       = extractSkillFreq(required || jdText);
+  const reqSkills     = Object.keys(reqFreq);
+  let reqHits = 0;
+  for (const skill of reqSkills) {
+    const ns      = normalizeText(skill);
+    const escaped = ns.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (new RegExp('\\b' + escaped + '\\b').test(normResume)) reqHits++;
+  }
+  const reqScore = reqSkills.length > 0 ? Math.round((reqHits / reqSkills.length) * 100) : 50;
+
+  // Factor 3: Distinctive phrase coverage (20%)
+  let distinctiveScore = 50;
+  if (jdRole.role && ROLE_TAXONOMY[jdRole.role]) {
+    const phrases = ROLE_TAXONOMY[jdRole.role].distinctive;
+    const hits    = phrases.filter(p => normResume.includes(normalizeText(p))).length;
+    distinctiveScore = phrases.length > 0 ? Math.round((hits / phrases.length) * 100) : 50;
+  }
+
+  // Factor 4: Canonical role title in resume (7%)
+  let titleScore = 0;
+  if (jdRole.role && ROLE_TAXONOMY[jdRole.role]) {
+    titleScore = ROLE_TAXONOMY[jdRole.role].titles.some(t => normResume.includes(normalizeText(t))) ? 100 : 0;
+  } else {
+    const tw = (jobTitle || '').toLowerCase().replace(/[^a-z\s]/g, '').split(/\s+/)
+                 .filter(w => w.length > 2 && !STOP_WORDS.has(w));
+    titleScore = tw.length > 0 ? Math.round(tw.filter(w => normResume.includes(w)).length / tw.length * 100) : 0;
+  }
+
+  // Factor 5: Bigram phrase overlap (3%)
+  const jdBigrams  = [...extractBigrams(jdText)].filter(bg => {
+    const [a, b] = bg.split(' ');
+    return !STOP_WORDS.has(a) && !STOP_WORDS.has(b);
+  });
+  const bigramHits  = jdBigrams.filter(bg => normResume.includes(bg)).length;
+  const bigramScore = jdBigrams.length > 0 ? Math.round((bigramHits / jdBigrams.length) * 100) : 0;
+
+  return (
+    roleMatchScore   * 0.40 +
+    reqScore         * 0.30 +
+    distinctiveScore * 0.20 +
+    titleScore       * 0.07 +
+    bigramScore      * 0.03
+  );
 }
 
 // ═════════════════════════════════════════════════════════════════════
@@ -737,16 +1225,22 @@ function cap(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : ''; }
 function renderResumes() {
   const listEl = document.getElementById('resumeList');
 
+  // Show which profile's resumes are being shown when there are multiple profiles
+  const activeP = state.profiles.find(x => x.id === state.activeProfileId) || state.profiles[0];
+  const profileBadge = state.profiles.length > 1 && activeP
+    ? `<div style="font-size:11px;color:#6b7280;margin-bottom:8px">Showing resumes for <strong>${escHtml(activeP.displayName)}</strong></div>`
+    : '';
+
   if (state.resumes.length === 0) {
-    listEl.innerHTML = `<div class="empty-state">
+    listEl.innerHTML = profileBadge + `<div class="empty-state">
       <svg width="32" height="32" viewBox="0 0 24 24" fill="none"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" stroke="#9ca3af" stroke-width="2"/><polyline points="14 2 14 8 20 8" stroke="#9ca3af" stroke-width="2"/></svg>
-      <p>No resumes yet</p>
-      <small>Upload a PDF or paste your resume text above</small>
+      <p>No resumes for ${escHtml(activeP ? activeP.displayName : 'this profile')}</p>
+      <small>Upload a PDF or paste resume text above</small>
     </div>`;
     return;
   }
 
-  listEl.innerHTML = state.resumes.map(r => `
+  listEl.innerHTML = profileBadge + state.resumes.map(r => `
     <div class="item-card">
       <div class="card-title">${escHtml(r.name)}</div>
       <div class="card-sub">${wordCount(r.text)} words · Added ${fmtDate(r.date)}</div>
@@ -767,7 +1261,7 @@ window.viewResume = (id) => {
 window.deleteResume = async (id) => {
   if (!confirm('Delete this resume?')) return;
   state.resumes = state.resumes.filter(r => r.id !== id);
-  await save(SK.RESUMES, state.resumes);
+  await saveResumes();
   renderResumes();
   toast('Resume deleted');
 };
@@ -950,11 +1444,21 @@ async function doLocalMatch() {
   const content = document.getElementById('localMatchContent');
   section.classList.remove('hidden');
 
+  const showTailorBtn = match.score < 80 && state.settings.apiKey;
+  const tailorHtml = showTailorBtn ? `
+    <div style="margin-top:12px;padding:10px 12px;background:#faf5ff;border:1px solid #e9d5ff;border-radius:8px;display:flex;align-items:center;justify-content:space-between;gap:8px">
+      <div>
+        <div class="text-sm text-bold" style="color:#7c3aed">Match below 80%</div>
+        <div style="font-size:11px;color:#6b7280">AI can tailor your resume to better fit this JD</div>
+      </div>
+      <button class="btn-sm btn-primary" id="btnTailorResume" style="background:#7c3aed;white-space:nowrap;flex-shrink:0">✨ Tailor Resume</button>
+    </div>` : '';
+
   content.innerHTML = `
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
       <div>
         <div class="text-bold" style="font-size:22px;color:${scoreColor(match.score)}">${match.score}%</div>
-        <div class="text-sm">Keyword Match</div>
+        <div class="text-sm">ATS Match</div>
       </div>
       <div style="flex:1">
         <div class="progress-bar"><div class="progress-fill" style="width:${match.score}%;background:${scoreColor(match.score)}"></div></div>
@@ -965,15 +1469,94 @@ async function doLocalMatch() {
     ${match.missing.length > 0 ? `
     <div style="margin-bottom:8px">
       <div class="text-sm text-bold" style="margin-bottom:4px;color:var(--danger)">❌ Missing Keywords (${match.missing.length})</div>
-      <div class="kw-chips">${match.missing.slice(0,12).map(k=>`<span class="kw-chip missing">${k}</span>`).join('')}</div>
+      <div class="kw-chips">${match.missing.slice(0,15).map(k=>`<span class="kw-chip missing">${escHtml(k)}</span>`).join('')}</div>
     </div>` : ''}
 
     ${match.present.length > 0 ? `
     <div>
       <div class="text-sm text-bold" style="margin-bottom:4px;color:var(--success)">✓ Present Keywords (${match.present.length})</div>
-      <div class="kw-chips">${match.present.slice(0,12).map(k=>`<span class="kw-chip present">${k}</span>`).join('')}</div>
+      <div class="kw-chips">${match.present.slice(0,15).map(k=>`<span class="kw-chip present">${escHtml(k)}</span>`).join('')}</div>
     </div>` : ''}
+
+    ${tailorHtml}
   `;
+
+  if (showTailorBtn) {
+    document.getElementById('btnTailorResume').addEventListener('click', () => tailorResumeForJob(resume, job));
+  }
+}
+
+// ── Tailor Resume ─────────────────────────────────────────────────────
+async function tailorResumeForJob(resume, job) {
+  const btn = document.getElementById('btnTailorResume');
+  if (btn) { btn.disabled = true; btn.textContent = '✨ Tailoring…'; }
+
+  try {
+    const activeP = state.profiles.find(x => x.id === state.activeProfileId) || state.profiles[0] || {};
+    const candidateName = [activeP.firstName, activeP.lastName].filter(Boolean).join(' ') || 'Candidate';
+
+    const systemMsg = `You are an expert resume writer and ATS optimization specialist.
+Your job is to tailor an existing resume to better match a specific job description.
+
+CRITICAL RULES — you MUST follow these without exception:
+1. NEVER add skills, technologies, certifications, companies, or experiences the candidate does not already have.
+2. Only rephrase, reorder, and emphasize content that already exists in the resume.
+3. Use the exact keywords and phrases from the job description wherever the candidate's existing experience supports it.
+4. Adjust bullet points to lead with stronger action verbs aligned with the JD's language.
+5. Rewrite the professional summary/objective to mirror the JD's priorities.
+6. Keep all dates, company names, job titles, and factual details exactly as they appear.
+7. Do NOT invent metrics or numbers unless they already exist in the original resume.
+8. Output ONLY the full tailored resume text — no explanations, no commentary, no markdown fences.`;
+
+    const userMsg = `CANDIDATE NAME: ${candidateName}
+JOB TITLE: ${job.title || ''}
+COMPANY: ${job.company || ''}
+
+=== ORIGINAL RESUME ===
+${resume.text}
+
+=== JOB DESCRIPTION ===
+${job.text.slice(0, 4000)}
+
+Tailor the resume above to maximise ATS match for this job. Follow all rules strictly.`;
+
+    const tailored = await callAI(userMsg, systemMsg);
+
+    // Name for the saved resume: "[Original Name] – [Company] [Title]"
+    const safeCo    = (job.company || 'Company').replace(/[^a-zA-Z0-9 &]/g, '').trim().slice(0, 30);
+    const safeTitle = (job.title   || 'Role')   .replace(/[^a-zA-Z0-9 &]/g, '').trim().slice(0, 30);
+    const suggestedName = `${resume.name} – ${safeCo} ${safeTitle}`;
+
+    // Show preview modal with save option
+    const escapedText = escHtml(tailored);
+    showHtmlModal('✨ Tailored Resume Preview', `
+      <div style="margin-bottom:10px;font-size:12px;color:#6b7280">
+        Review the tailored version below. Only rephrasing was applied — no new skills were added.
+      </div>
+      <div style="margin-bottom:10px">
+        <label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px">Save as:</label>
+        <input id="tailoredResumeName" class="input" value="${escHtml(suggestedName)}" style="width:100%;box-sizing:border-box" />
+      </div>
+      <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:12px;max-height:280px;overflow-y:auto;white-space:pre-wrap;font-size:11px;font-family:monospace;line-height:1.5">${escapedText}</div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn-primary" onclick="window.saveTailoredResume()" style="flex:1">💾 Save to My Resumes</button>
+        <button class="btn-ghost" onclick="closeModal()" style="flex:1">Discard</button>
+      </div>
+    `);
+
+    window.saveTailoredResume = async () => {
+      const name = (document.getElementById('tailoredResumeName') || {}).value?.trim() || suggestedName;
+      await saveResume(name, tailored);
+      closeModal();
+      toast(`✓ "${name}" saved to your resumes`, 'success', 4000);
+      doLocalMatch(); // Refresh the match panel with the new resume auto-selected if it's better
+    };
+
+  } catch (err) {
+    toast('Tailoring failed: ' + err.message, 'error', 5000);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '✨ Tailor Resume'; }
+  }
 }
 
 // ── AI Analysis ───────────────────────────────────────────────────────
@@ -1648,7 +2231,8 @@ function wireEvents() {
       linkedin: '', github: '', portfolio: '',
       city: '', state: '', country: '', zipCode: '',
       salary: '', availability: '',
-      whyThisRole: '', aboutMe: '', strength: '', weakness: '', coverLetter: ''
+      whyThisRole: '', aboutMe: '', strength: '', weakness: '', coverLetter: '',
+      resumes: []
     };
     state.profiles.push(newP);
     state.activeProfileId = newP.id;
@@ -1664,6 +2248,8 @@ function wireEvents() {
   document.getElementById('btnClearData').addEventListener('click', async () => {
     if (!confirm('This will delete ALL resumes, jobs, and applications. Are you sure?')) return;
     state.resumes = []; state.jobs = []; state.applications = []; state.analyses = {};
+    // Clear resumes from every profile before wiping storage
+    state.profiles.forEach(p => { p.resumes = []; });
     await chrome.storage.local.clear();
     await save(SK.SETTINGS, state.settings); // Keep settings
     switchTab('dashboard');
@@ -1831,7 +2417,7 @@ async function handleResumeFile(file) {
 async function saveResume(name, text) {
   const resume = { id: uid(), name, text, date: new Date().toISOString() };
   state.resumes.unshift(resume);
-  await save(SK.RESUMES, state.resumes);
+  await saveResumes();
   renderResumes();
   toast(`✓ Resume "${name}" saved`, 'success');
 }
@@ -1938,12 +2524,12 @@ function autoSelectBestResume(jobId) {
   const job = state.jobs.find(j => j.id === jobId);
   if (!job) return;
 
-  // Score each resume by local keyword match — pick the best one
+  // Score each resume using multi-factor scoring (text similarity + title match + keywords)
   let bestId    = state.resumes[0].id;
   let bestScore = -1;
 
   for (const resume of state.resumes) {
-    const { score } = getLocalMatch(resume.text, job.text);
+    const score = computeResumeJobScore(resume.text, job.text, job.title);
     if (score > bestScore) { bestScore = score; bestId = resume.id; }
   }
 
