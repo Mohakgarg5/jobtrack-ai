@@ -79,41 +79,53 @@ async function handleApplyClick(data, tab) {
   if (!data?.url) return;
 
   const stored = await chrome.storage.local.get(['jt_jobs', 'jt_applications']);
-  const jobs         = stored['jt_jobs']         || [];
-  const applications = stored['jt_applications'] || [];
+  let jobs               = stored['jt_jobs']         || [];
+  const applications     = stored['jt_applications'] || [];
 
   // Match saved job by URL (ignore query params)
   const clickedBase = data.url.split('?')[0];
-  const job = jobs.find(j => {
+  let job = jobs.find(j => {
     if (!j.url) return false;
     const savedBase = j.url.split('?')[0];
     return clickedBase.startsWith(savedBase) || savedBase.startsWith(clickedBase);
   });
-  if (!job) return; // Job not in library yet — nothing to mark
+
+  // Job not in library — auto-capture from click data if available
+  if (!job && data.jobData?.description?.length > 50) {
+    const newJob = {
+      id:             'job_' + Date.now(),
+      title:          data.jobData.title    || 'Untitled Job',
+      company:        data.jobData.company  || 'Unknown Company',
+      location:       data.jobData.location || '',
+      text:           data.jobData.description,
+      url:            data.url,
+      source:         data.jobData.source   || 'auto',
+      recruiterEmail: data.jobData.recruiterEmail || '',
+      date:           new Date().toISOString()
+    };
+    jobs.unshift(newJob);
+    await chrome.storage.local.set({ jt_jobs: jobs });
+    job = newJob;
+    setBadge(tab.id, 'JD', '#4f46e5');
+    chrome.runtime.sendMessage({ type: 'JD_AUTO_SAVED', jobId: newJob.id, isNew: true }).catch(() => {});
+  }
+
+  if (!job) return; // No JD available — can't mark
 
   // Avoid duplicates
   const alreadyApplied = applications.find(a => a.jobId === job.id && a.status === 'applied');
   if (alreadyApplied) return;
 
   const newApp = {
-    id:       'app_' + Date.now(),
-    jobId:    job.id,
-    resumeId: '',
-    status:   'applied',
-    notes:    '',
-    date:     new Date().toISOString()
+    id: 'app_' + Date.now(), jobId: job.id, resumeId: '',
+    status: 'applied', notes: '', date: new Date().toISOString()
   };
-
   applications.push(newApp);
   await chrome.storage.local.set({ jt_applications: applications });
 
   setBadge(tab.id, '✓', '#059669');
-
   chrome.runtime.sendMessage({
-    type:  'JOB_MARKED_APPLIED',
-    jobId: job.id,
-    title: job.title,
-    company: job.company
+    type: 'JOB_MARKED_APPLIED', jobId: job.id, title: job.title, company: job.company
   }).catch(() => {});
 }
 

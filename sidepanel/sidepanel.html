@@ -51,6 +51,12 @@
     </button>
   </nav>
 
+  <!-- ── Profile Switcher (shown when 2 profiles exist) ── -->
+  <div class="profile-bar hidden" id="profileBar">
+    <span class="profile-bar-label">Active Profile:</span>
+    <div id="profileTabs" class="profile-tabs-row"></div>
+  </div>
+
   <!-- ── Job Detected Banner ──────────────────── -->
   <div class="job-banner hidden" id="jobBanner">
     <div class="job-banner-info">
@@ -331,6 +337,10 @@
           <span class="autofill-badge">Autofill</span>
         </div>
         <p class="setting-hint" style="margin-bottom:10px">Stored locally. Used to fill job application forms automatically when you click "Auto-Fill Application".</p>
+        <div style="display:flex;gap:8px;margin-bottom:10px;align-items:center">
+          <input type="text" id="pDisplayName" placeholder="Profile name (e.g. 'Mohak', 'Sarah')" class="text-input" style="flex:1;margin-bottom:0" />
+          <button class="btn-sm btn-ghost" id="btnAddProfile" style="white-space:nowrap;flex-shrink:0">+ 2nd Profile</button>
+        </div>
         <div class="profile-grid">
           <input type="text"  id="pFirstName"  placeholder="First name"          class="text-input" />
           <input type="text"  id="pLastName"   placeholder="Last name"           class="text-input" />

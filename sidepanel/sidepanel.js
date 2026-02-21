@@ -6,13 +6,15 @@
 
 // ── Storage Keys ──────────────────────────────────────────────────────
 const SK = {
-  RESUMES:      'jt_resumes',
-  JOBS:         'jt_jobs',
-  APPLICATIONS: 'jt_applications',
-  ANALYSES:     'jt_analyses',
-  SETTINGS:     'jt_settings',
-  PROFILE:      'jt_profile',
-  PRE_ANSWERS:  'jt_pre_answers'
+  RESUMES:        'jt_resumes',
+  JOBS:           'jt_jobs',
+  APPLICATIONS:   'jt_applications',
+  ANALYSES:       'jt_analyses',
+  SETTINGS:       'jt_settings',
+  PROFILE:        'jt_profile',
+  PRE_ANSWERS:    'jt_pre_answers',
+  PROFILES:       'jt_profiles',
+  ACTIVE_PROFILE: 'jt_active_profile_id'
 };
 
 // ── App State ─────────────────────────────────────────────────────────
@@ -21,10 +23,12 @@ const state = {
   jobs: [],
   applications: [],
   analyses: {},
-  settings:    { apiKey: '', provider: 'gemini', model: 'gemini-1.5-pro' },
-  profile:     { firstName:'', lastName:'', email:'', phone:'', linkedin:'', github:'', portfolio:'', city:'', state:'', country:'', zipCode:'', salary:'', availability:'' },
-  preAnswers:  { whyThisRole:'', aboutMe:'', strength:'', weakness:'', coverLetter:'' },
-  activeTab:   'dashboard'
+  settings:       { apiKey: '', provider: 'gemini', model: 'gemini-1.5-pro' },
+  profile:        { firstName:'', lastName:'', email:'', phone:'', linkedin:'', github:'', portfolio:'', city:'', state:'', country:'', zipCode:'', salary:'', availability:'' },
+  preAnswers:     { whyThisRole:'', aboutMe:'', strength:'', weakness:'', coverLetter:'' },
+  profiles:       [],
+  activeProfileId: '',
+  activeTab:      'dashboard'
 };
 
 // ── Load / Save ───────────────────────────────────────────────────────
@@ -35,11 +39,94 @@ async function loadAll() {
   state.applications = data[SK.APPLICATIONS] || [];
   state.analyses     = data[SK.ANALYSES]     || {};
   state.settings     = { apiKey: '', provider: 'gemini', model: 'gemini-1.5-pro', ...(data[SK.SETTINGS] || {}) };
-  state.profile      = { ...state.profile,     ...(data[SK.PROFILE]     || {}) };
-  state.preAnswers   = { ...state.preAnswers,  ...(data[SK.PRE_ANSWERS] || {}) };
+
+  let profiles       = data[SK.PROFILES]       || [];
+  let activeProfileId = data[SK.ACTIVE_PROFILE] || '';
+
+  // ── Migrate old single-profile data into the profiles array ────────────────────
+  if (profiles.length === 0) {
+    const oldP  = { ...state.profile,    ...(data[SK.PROFILE]     || {}) };
+    const oldPA = { ...state.preAnswers, ...(data[SK.PRE_ANSWERS] || {}) };
+    const migrated = {
+      id: 'profile_' + Date.now(),
+      displayName: 'Profile 1',
+      ...oldP,
+      whyThisRole:  oldPA.whyThisRole  || '',
+      aboutMe:      oldPA.aboutMe      || '',
+      strength:     oldPA.strength     || '',
+      weakness:     oldPA.weakness     || '',
+      coverLetter:  oldPA.coverLetter  || ''
+    };
+    profiles = [migrated];
+    activeProfileId = migrated.id;
+    await chrome.storage.local.set({
+      [SK.PROFILES]:       profiles,
+      [SK.ACTIVE_PROFILE]: activeProfileId
+    });
+  }
+
+  state.profiles       = profiles;
+  state.activeProfileId = activeProfileId || (profiles[0] && profiles[0].id) || '';
+  syncActiveProfileToState();
 }
 
 const save = async (key, val) => chrome.storage.local.set({ [key]: val });
+
+// ── Profile helpers ───────────────────────────────────────────────────
+function syncActiveProfileToState() {
+  const p = state.profiles.find(x => x.id === state.activeProfileId) || state.profiles[0] || {};
+  state.profile = {
+    firstName:    p.firstName    || '',
+    lastName:     p.lastName     || '',
+    email:        p.email        || '',
+    phone:        p.phone        || '',
+    linkedin:     p.linkedin     || '',
+    github:       p.github       || '',
+    portfolio:    p.portfolio    || '',
+    city:         p.city         || '',
+    state:        p.state        || '',
+    country:      p.country      || '',
+    zipCode:      p.zipCode      || '',
+    salary:       p.salary       || '',
+    availability: p.availability || ''
+  };
+  state.preAnswers = {
+    whyThisRole:  p.whyThisRole  || '',
+    aboutMe:      p.aboutMe      || '',
+    strength:     p.strength     || '',
+    weakness:     p.weakness     || '',
+    coverLetter:  p.coverLetter  || ''
+  };
+  // Keep legacy keys in sync so content script autofill still works
+  chrome.storage.local.set({
+    [SK.PROFILE]:     state.profile,
+    [SK.PRE_ANSWERS]: state.preAnswers
+  });
+}
+
+function renderProfileBar() {
+  const bar = document.getElementById('profileBar');
+  if (state.profiles.length <= 1) { bar.classList.add('hidden'); return; }
+  bar.classList.remove('hidden');
+  document.getElementById('profileTabs').innerHTML = state.profiles.map(p =>
+    `<button class="profile-tab-btn${p.id === state.activeProfileId ? ' active' : ''}"
+             data-action="switch-profile" data-profile-id="${p.id}">
+       ${escHtml(p.displayName)}
+     </button>`
+  ).join('');
+}
+
+async function switchActiveProfile(profileId) {
+  if (profileId === state.activeProfileId) return;
+  const p = state.profiles.find(x => x.id === profileId);
+  if (!p) return;
+  state.activeProfileId = profileId;
+  await save(SK.ACTIVE_PROFILE, profileId);
+  syncActiveProfileToState();
+  renderProfileBar();
+  if (state.activeTab === 'settings') renderSettings();
+  toast(`Switched to ${escHtml(p.displayName)}`, 'success', 2000);
+}
 
 // ── Toast ─────────────────────────────────────────────────────────────
 let toastTimer;
@@ -1260,6 +1347,13 @@ window.addAppNote = async (appId) => {
 
 function renderSettings() {
   const { apiKey, provider, model } = state.settings;
+  // Active profile name
+  const activeP = state.profiles.find(x => x.id === state.activeProfileId) || state.profiles[0] || {};
+  const pDN = document.getElementById('pDisplayName');
+  if (pDN) pDN.value = activeP.displayName || '';
+  const addBtn = document.getElementById('btnAddProfile');
+  if (addBtn) addBtn.style.display = state.profiles.length >= 2 ? 'none' : '';
+
   document.getElementById('apiKeyInput').value    = apiKey   || '';
   document.getElementById('providerSelect').value = provider || 'gemini';
   document.getElementById('modelSelect').value    = model    || 'gemini-1.5-pro';
@@ -1504,33 +1598,51 @@ function wireEvents() {
   });
 
   document.getElementById('btnSaveProfile').addEventListener('click', async () => {
-    state.profile = {
-      firstName:    document.getElementById('pFirstName').value.trim(),
-      lastName:     document.getElementById('pLastName').value.trim(),
-      email:        document.getElementById('pEmail').value.trim(),
-      phone:        document.getElementById('pPhone').value.trim(),
-      linkedin:     document.getElementById('pLinkedIn').value.trim(),
-      github:       document.getElementById('pGithub').value.trim(),
-      portfolio:    document.getElementById('pPortfolio').value.trim(),
-      city:         document.getElementById('pCity').value.trim(),
-      state:        document.getElementById('pState').value.trim(),
-      country:      document.getElementById('pCountry').value.trim(),
-      zipCode:      document.getElementById('pZip').value.trim(),
-      salary:       document.getElementById('pSalary').value.trim(),
-      availability: document.getElementById('pAvailability').value.trim()
-    };
-    state.preAnswers = {
-      whyThisRole:  document.getElementById('paWhyRole').value.trim(),
-      aboutMe:      document.getElementById('paAboutMe').value.trim(),
-      strength:     document.getElementById('paStrength').value.trim(),
-      weakness:     document.getElementById('paWeakness').value.trim(),
-      coverLetter:  document.getElementById('paCoverLetter').value.trim()
-    };
-    await Promise.all([
-      save(SK.PROFILE, state.profile),
-      save(SK.PRE_ANSWERS, state.preAnswers)
-    ]);
+    const activeP = state.profiles.find(p => p.id === state.activeProfileId) || state.profiles[0];
+    if (!activeP) return;
+    const g = id => (document.getElementById(id) || {}).value?.trim() || '';
+    activeP.displayName  = g('pDisplayName')  || activeP.displayName;
+    activeP.firstName    = g('pFirstName');
+    activeP.lastName     = g('pLastName');
+    activeP.email        = g('pEmail');
+    activeP.phone        = g('pPhone');
+    activeP.linkedin     = g('pLinkedIn');
+    activeP.github       = g('pGithub');
+    activeP.portfolio    = g('pPortfolio');
+    activeP.city         = g('pCity');
+    activeP.state        = g('pState');
+    activeP.country      = g('pCountry');
+    activeP.zipCode      = g('pZip');
+    activeP.salary       = g('pSalary');
+    activeP.availability = g('pAvailability');
+    activeP.whyThisRole  = g('paWhyRole');
+    activeP.aboutMe      = g('paAboutMe');
+    activeP.strength     = g('paStrength');
+    activeP.weakness     = g('paWeakness');
+    activeP.coverLetter  = g('paCoverLetter');
+    await save(SK.PROFILES, state.profiles);
+    syncActiveProfileToState();
+    renderProfileBar();
     toast('Profile & answers saved! ✓', 'success');
+  });
+
+  document.getElementById('btnAddProfile').addEventListener('click', async () => {
+    if (state.profiles.length >= 2) { toast('Maximum 2 profiles supported', 'error', 2000); return; }
+    const newP = {
+      id: 'profile_' + Date.now(), displayName: 'Profile 2',
+      firstName: '', lastName: '', email: '', phone: '',
+      linkedin: '', github: '', portfolio: '',
+      city: '', state: '', country: '', zipCode: '',
+      salary: '', availability: '',
+      whyThisRole: '', aboutMe: '', strength: '', weakness: '', coverLetter: ''
+    };
+    state.profiles.push(newP);
+    state.activeProfileId = newP.id;
+    await chrome.storage.local.set({ [SK.PROFILES]: state.profiles, [SK.ACTIVE_PROFILE]: newP.id });
+    syncActiveProfileToState();
+    renderProfileBar();
+    renderSettings();
+    toast('Profile 2 created! Fill in the details below and save.', 'success', 4000);
   });
 
   document.getElementById('btnExportData').addEventListener('click', exportData);
@@ -1578,6 +1690,12 @@ function wireEvents() {
     if (action === 'open-notes')    window.openAppNotes(id);
     if (action === 'update-status') window.updateAppStatus(id, btn.dataset.status);
     if (action === 'delete-app')    window.deleteApp(id);
+  });
+
+  // Profile bar switching
+  document.getElementById('profileBar').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-action="switch-profile"]');
+    if (btn) switchActiveProfile(btn.dataset.profileId);
   });
 
   // Modal (for Add Note and confirm-mark-applied buttons)
@@ -1813,6 +1931,7 @@ async function init() {
   await loadAll();
   wireEvents();
   updateApiStatusBadge();
+  renderProfileBar();
   switchTab('dashboard');
   checkCurrentTabOnLoad();
 }

@@ -1044,10 +1044,23 @@
     if (/\bapply\b/i.test(text) && !/\bapplied\b|\bapplication/i.test(text)) {
       chrome.runtime.sendMessage({
         type: 'APPLY_CLICKED',
-        data: { url: window.location.href }
+        data: { url: window.location.href, jobData: extractJobData() }
       }).catch(() => {});
     }
   }, true); // capture phase — fires before potential page navigation
+
+  // ── Re-capture on SPA navigation (LinkedIn, Indeed, etc.) ────────────────────
+  let _jtLastUrl = location.href;
+  new MutationObserver(() => {
+    if (location.href !== _jtLastUrl) {
+      _jtLastUrl = location.href;
+      clearTimeout(window._jtSpaTimer);
+      window._jtSpaTimer = setTimeout(() => {
+        const jobData = extractJobData();
+        if (jobData.description && jobData.description.length > 100) sendJobData(jobData);
+      }, 2500);
+    }
+  }).observe(document, { subtree: true, childList: true });
 
   // Listen for explicit capture requests from popup
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
