@@ -1021,6 +1021,26 @@
     } catch (_) {}
   }, 2500);
 
+  // ── Detect Apply button clicks → auto-mark job as Applied ───────────────
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('a, button, input[type=submit], input[type=button], [role=button]');
+    if (!btn) return;
+    const text = (
+      btn.innerText ||
+      btn.value ||
+      btn.getAttribute('aria-label') ||
+      btn.getAttribute('data-label') || ''
+    ).trim();
+    // Match "Apply", "Apply Now", "Quick Apply", "Easy Apply", etc.
+    // but NOT "Applied", "Application", "View Applications"
+    if (/\bapply\b/i.test(text) && !/\bapplied\b|\bapplication/i.test(text)) {
+      chrome.runtime.sendMessage({
+        type: 'APPLY_CLICKED',
+        data: { url: window.location.href }
+      }).catch(() => {});
+    }
+  }, true); // capture phase — fires before potential page navigation
+
   // Listen for explicit capture requests from popup
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'CAPTURE_JD') {

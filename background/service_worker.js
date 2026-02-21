@@ -19,6 +19,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse({ success: true });
   }
 
+  if (message.type === 'APPLY_CLICKED') {
+    handleApplyClick(message.data, sender.tab);
+    sendResponse({ success: true });
+  }
+
   return true;
 });
 
@@ -68,6 +73,48 @@ async function autoSaveJD(jdData, tab) {
     job:   newJob,
     isNew: true
   }).catch(() => {}); // Side panel might not be open — that's fine
+}
+
+async function handleApplyClick(data, tab) {
+  if (!data?.url) return;
+
+  const stored = await chrome.storage.local.get(['jt_jobs', 'jt_applications']);
+  const jobs         = stored['jt_jobs']         || [];
+  const applications = stored['jt_applications'] || [];
+
+  // Match saved job by URL (ignore query params)
+  const clickedBase = data.url.split('?')[0];
+  const job = jobs.find(j => {
+    if (!j.url) return false;
+    const savedBase = j.url.split('?')[0];
+    return clickedBase.startsWith(savedBase) || savedBase.startsWith(clickedBase);
+  });
+  if (!job) return; // Job not in library yet — nothing to mark
+
+  // Avoid duplicates
+  const alreadyApplied = applications.find(a => a.jobId === job.id && a.status === 'applied');
+  if (alreadyApplied) return;
+
+  const newApp = {
+    id:       'app_' + Date.now(),
+    jobId:    job.id,
+    resumeId: '',
+    status:   'applied',
+    notes:    '',
+    date:     new Date().toISOString()
+  };
+
+  applications.push(newApp);
+  await chrome.storage.local.set({ jt_applications: applications });
+
+  setBadge(tab.id, '✓', '#059669');
+
+  chrome.runtime.sendMessage({
+    type:  'JOB_MARKED_APPLIED',
+    jobId: job.id,
+    title: job.title,
+    company: job.company
+  }).catch(() => {});
 }
 
 function setBadge(tabId, text, color) {

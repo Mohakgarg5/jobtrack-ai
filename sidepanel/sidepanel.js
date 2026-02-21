@@ -1558,6 +1558,14 @@ function wireEvents() {
     if (msg.type === 'NAVIGATE_TO') {
       switchTab(msg.tab);
     }
+    if (msg.type === 'JOB_MARKED_APPLIED') {
+      chrome.storage.local.get(SK.APPLICATIONS).then(data => {
+        state.applications = data[SK.APPLICATIONS] || [];
+        toast(`✓ Auto-marked as Applied: "${escHtml(msg.title)} at ${escHtml(msg.company)}"`, 'success', 5000);
+        renderDashboard();
+        renderTracker();
+      });
+    }
   });
 
   // ── Banner buttons ────────────────────────────────────────────────
