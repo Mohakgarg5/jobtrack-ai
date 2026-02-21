@@ -1654,6 +1654,7 @@ async function triggerCaptureFromCurrentTab() {
     if (response?.success && response.data?.description?.length > 50) {
       const jd = response.data;
       await saveJob({ title: jd.title, company: jd.company, text: jd.description, location: jd.location, url: jd.url, source: jd.source, recruiterEmail: jd.recruiterEmail || '' });
+      if (state.jobs.length > 0) showJobBanner(state.jobs[0], true);
     } else {
       toast('No job description found on this page. Try the manual form below.', 'error', 4000);
       document.getElementById('addJobForm').classList.remove('hidden');

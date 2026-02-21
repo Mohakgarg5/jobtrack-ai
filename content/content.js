@@ -805,6 +805,21 @@
   }
 
   function extractCompanyFromDomain() {
+    // 1. og:site_name meta tag (most reliable for company career portals)
+    const ogSite = document.querySelector('meta[property="og:site_name"]');
+    if (ogSite && ogSite.content && ogSite.content.trim().length > 1) return ogSite.content.trim();
+
+    // 2. Page title — if pattern is "Job Title | Company Name" or "Job Title – Company Name"
+    const titleParts = document.title.split(/[|–\-—]/);
+    if (titleParts.length >= 2) {
+      const candidate = titleParts[titleParts.length - 1].trim();
+      // Reject generic words that aren't company names
+      if (candidate.length > 2 && !/careers|jobs|job board|recruiting|apply|hiring/i.test(candidate)) {
+        return candidate;
+      }
+    }
+
+    // 3. Fall back to hostname
     const clean = hostname.replace('www.', '').replace('jobs.', '').replace('careers.', '');
     const parts = clean.split('.');
     const name = parts[0];
