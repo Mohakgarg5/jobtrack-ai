@@ -754,14 +754,44 @@ window.deleteJob = async (id) => {
   toast('Job deleted');
 };
 
-window.markJobAppliedFromList = async (id) => {
+window.markJobAppliedFromList = (id) => {
   const alreadyApplied = state.applications.some(a => a.jobId === id && a.status === 'applied');
   if (alreadyApplied) { toast('Already marked as applied', 'error', 2000); return; }
+
   const job = state.jobs.find(j => j.id === id);
-  const app = { id: uid(), jobId: id, resumeId: '', status: 'applied', notes: '', date: new Date().toISOString() };
+  const resumeOptions = state.resumes.length
+    ? state.resumes.map(r => `<option value="${r.id}">${escHtml(r.name)}</option>`).join('')
+    : '';
+
+  const html = `
+    <div style="margin-bottom:14px;padding:10px;background:var(--surface-2,#f3f4f6);border-radius:8px">
+      <div style="font-weight:600;font-size:13px;color:var(--text-1)">${escHtml(job ? job.title : '')}</div>
+      <div style="font-size:12px;color:var(--text-2);margin-top:2px">${escHtml(job ? job.company : '')}</div>
+    </div>
+    <label style="font-size:12px;font-weight:600;color:var(--text-2);display:block;margin-bottom:6px">
+      Which resume did you apply with?
+    </label>
+    <select id="appliedResumeSelect" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:13px;margin-bottom:14px;background:var(--bg)">
+      <option value="">— No resume / not sure —</option>
+      ${resumeOptions}
+    </select>
+    <button class="btn-sm btn-primary" style="width:100%" data-action="confirm-mark-applied" data-job-id="${id}">
+      ✓ Mark as Applied
+    </button>
+  `;
+  showHtmlModal('📤 Mark as Applied', html);
+};
+
+window.confirmMarkApplied = async (jobId) => {
+  const resumeId = (document.getElementById('appliedResumeSelect') || {}).value || '';
+  const job    = state.jobs.find(j => j.id === jobId);
+  const resume = state.resumes.find(r => r.id === resumeId);
+  const app = { id: uid(), jobId, resumeId, status: 'applied', notes: '', date: new Date().toISOString() };
   state.applications.push(app);
   await save(SK.APPLICATIONS, state.applications);
-  toast(`✓ Marked as Applied: "${job ? job.title : ''}"`, 'success', 3000);
+  closeModal();
+  const resumeNote = resume ? ` with "${resume.name}"` : '';
+  toast(`✓ Applied to "${job ? job.title : ''}"${resumeNote}!`, 'success', 3000);
   renderJobs();
   renderDashboard();
 };
@@ -1550,10 +1580,13 @@ function wireEvents() {
     if (action === 'delete-app')    window.deleteApp(id);
   });
 
-  // Modal (for Add Note button inside notes modal)
+  // Modal (for Add Note and confirm-mark-applied buttons)
   document.getElementById('modal').addEventListener('click', (e) => {
-    const btn = e.target.closest('[data-action="add-note"]');
-    if (btn) window.addAppNote(btn.dataset.id);
+    const addNote = e.target.closest('[data-action="add-note"]');
+    if (addNote) window.addAppNote(addNote.dataset.id);
+
+    const confirmApply = e.target.closest('[data-action="confirm-mark-applied"]');
+    if (confirmApply) window.confirmMarkApplied(confirmApply.dataset.jobId);
   });
 
   // ── Listen for messages from popup / background ───────────────────

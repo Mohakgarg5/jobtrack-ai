@@ -676,9 +676,9 @@
     }
 
     return {
-      title:          cleanText(title)       || 'Untitled Job',
-      company:        cleanText(company)     || extractCompanyFromDomain(),
-      location:       cleanText(location),
+      title:          decodeEntities(cleanText(title))   || 'Untitled Job',
+      company:        decodeEntities(cleanText(company)) || extractCompanyFromDomain(),
+      location:       decodeEntities(cleanText(location)),
       description:    cleanText(description),
       recruiterEmail: extractRecruiterEmail(),
       url:            window.location.href,
@@ -794,6 +794,14 @@
     const tmp = document.createElement('div');
     tmp.innerHTML = html;
     return tmp.innerText || '';
+  }
+
+  // Decode HTML entities (e.g. &#39; → ', &amp; → &) without stripping tags
+  function decodeEntities(text) {
+    if (!text || !/&[#\w]+;/.test(text)) return text;
+    const d = document.createElement('div');
+    d.innerHTML = text;
+    return d.innerText || text;
   }
 
   function cleanText(text) {
