@@ -27,18 +27,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
+function normalizeJobUrl(url) {
+  if (!url) return '';
+  try { return new URL(url).origin + new URL(url).pathname.replace(/\/$/, ''); }
+  catch { return url.split('?')[0].split('#')[0].replace(/\/$/, ''); }
+}
+
 async function autoSaveJD(jdData, tab) {
   if (!jdData || !jdData.description || jdData.description.length < 100) return;
 
   const stored = await chrome.storage.local.get(JT_JOBS_KEY);
   const jobs   = stored[JT_JOBS_KEY] || [];
 
-  // Check if this URL is already saved — avoid duplicates
-  const alreadySaved = jdData.url && jobs.some(j => j.url === jdData.url);
+  // Check if this URL is already saved — strip query params so tracking tokens don't cause duplicates
+  const norm = normalizeJobUrl(jdData.url);
+  const alreadySaved = norm && jobs.some(j => normalizeJobUrl(j.url) === norm);
 
   if (alreadySaved) {
     // Already in library — just show a green badge
-    const existing = jobs.find(j => j.url === jdData.url);
+    const existing = jobs.find(j => normalizeJobUrl(j.url) === norm);
     setBadge(tab.id, '✓', '#059669');
     chrome.runtime.sendMessage({
       type: 'JD_AUTO_SAVED',
@@ -82,12 +89,12 @@ async function handleApplyClick(data, tab) {
   let jobs               = stored['jt_jobs']         || [];
   const applications     = stored['jt_applications'] || [];
 
-  // Match saved job by URL (ignore query params)
-  const clickedBase = data.url.split('?')[0];
+  // Match saved job by URL (ignore query params and hash)
+  const clickedNorm = normalizeJobUrl(data.url);
   let job = jobs.find(j => {
     if (!j.url) return false;
-    const savedBase = j.url.split('?')[0];
-    return clickedBase.startsWith(savedBase) || savedBase.startsWith(clickedBase);
+    const savedNorm = normalizeJobUrl(j.url);
+    return savedNorm === clickedNorm || clickedNorm.startsWith(savedNorm) || savedNorm.startsWith(clickedNorm);
   });
 
   // Job not in library — auto-capture from click data if available

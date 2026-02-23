@@ -88,6 +88,12 @@ async function loadAll() {
 
 const save = async (key, val) => chrome.storage.local.set({ [key]: val });
 
+// Returns only the applications belonging to the currently active profile.
+// Old apps that predate profile support (no profileId) are shown on all profiles for backward compat.
+function activeApps() {
+  return state.applications.filter(a => !a.profileId || a.profileId === state.activeProfileId);
+}
+
 // Saves current profile's resumes back into the profiles array and persists it.
 // Call this wherever you previously called save(SK.RESUMES, state.resumes).
 async function saveResumes() {
@@ -152,11 +158,18 @@ async function switchActiveProfile(profileId) {
   syncActiveProfileToState(); // loads this profile's resumes into state.resumes
   renderProfileBar();
   renderDashboard();
-  // Re-render any tab that shows profile-specific data
+  // Re-render whichever tab is currently visible (all profile-sensitive tabs)
   const t = state.activeTab;
-  if (t === 'resumes')   renderResumes();
-  if (t === 'analyze')   renderAnalyze();
-  if (t === 'settings')  renderSettings();
+  if (t === 'resumes')  renderResumes();
+  if (t === 'tracker')  renderTracker();
+  if (t === 'jobs')     renderJobs();
+  if (t === 'analyze')  {
+    renderAnalyze();
+    document.getElementById('localMatchSection')?.classList.add('hidden');
+    document.getElementById('analyzeResults')?.classList.add('hidden');
+    document.getElementById('analyzeLoading')?.classList.add('hidden');
+  }
+  if (t === 'settings') renderSettings();
   toast(`Switched to ${escHtml(p.displayName)}`, 'success', 2000);
 }
 
@@ -667,9 +680,8 @@ function extractBigrams(text) {
 function getLocalMatch(resumeText, jdText) {
   const normResume = normalizeText(resumeText);
   const { required, preferred } = parseJDSections(jdText);
-  const reqFreq    = extractSkillFreq(required || jdText);
-  const prefFreq   = extractSkillFreq(preferred || '');
-  const prefSet    = new Set(Object.keys(prefFreq));
+  const reqFreq  = extractSkillFreq(required || jdText);
+  const prefFreq = extractSkillFreq(preferred || '');
 
   const present = [], missing = [];
   let earned = 0, total = 0;
@@ -694,7 +706,16 @@ function getLocalMatch(resumeText, jdText) {
     else        { missing.push(skill + ' ✦'); }
   }
 
-  const score = total > 0 ? Math.round((earned / total) * 100) : 0;
+  // If no skills were found in the JD at all, fall back to a simple word-overlap score
+  // so we don't show a misleading 0% on niche JDs that happen to have no ALL_SKILLS hits.
+  if (total === 0) {
+    const normJd  = normalizeText(jdText);
+    const jdWords = [...new Set(normJd.split(/\s+/).filter(w => w.length > 3 && !STOP_WORDS.has(w)))];
+    const hits    = jdWords.filter(w => normResume.includes(w)).length;
+    const fallback = jdWords.length > 0 ? Math.round((hits / jdWords.length) * 100) : 50;
+    return { present, missing, score: fallback, total: 0, noSkillsFound: true };
+  }
+  const score = Math.round((earned / total) * 100);
   return { present, missing, score, total: present.length + missing.length };
 }
 
@@ -820,7 +841,7 @@ async function callGemini(userMsg, systemMsg, apiKey, model) {
 async function callClaude(userMsg, systemMsg, apiKey, model) {
   const body = {
     model: model || 'claude-haiku-4-5',
-    max_tokens: 2048,
+    max_tokens: 4096,
     messages: [{ role: 'user', content: userMsg }]
   };
   if (systemMsg) body.system = systemMsg;
@@ -1124,19 +1145,20 @@ async function markJobAsApplied(resumeId, jobId) {
   if (!jobId) { toast('Select a job first', 'error'); return; }
 
   // Avoid double-adding the same job+resume as "applied"
-  const exists = state.applications.find(a => a.jobId === jobId && a.status === 'applied' && a.resumeId === resumeId);
+  const exists = activeApps().find(a => a.jobId === jobId && a.status === 'applied' && a.resumeId === resumeId);
   if (exists) {
     toast('Already marked as applied with this resume', 'error', 3000);
     return;
   }
 
   const app = {
-    id:       uid(),
+    id:        uid(),
     jobId,
-    resumeId: resumeId || '',
-    status:   'applied',
-    notes:    '',
-    date:     new Date().toISOString()
+    resumeId:  resumeId || '',
+    status:    'applied',
+    notes:     '',
+    profileId: state.activeProfileId,
+    date:      new Date().toISOString()
   };
   state.applications.push(app);
   await save(SK.APPLICATIONS, state.applications);
@@ -1155,18 +1177,19 @@ async function markJobAsApplied(resumeId, jobId) {
 function renderDashboard() {
   document.getElementById('dashResumes').textContent = state.resumes.length;
   document.getElementById('dashJobs').textContent    = state.jobs.length;
-  document.getElementById('dashApps').textContent    = state.applications.length;
+  const _apps = activeApps();
+  document.getElementById('dashApps').textContent    = _apps.length;
 
   // ── Analytics row ──────────────────────────────────────────────────
   const analyticsEl = document.getElementById('dashAnalytics');
   if (analyticsEl) {
-    const totalApplied   = state.applications.filter(a => a.status !== 'saved').length;
-    const interviews     = state.applications.filter(a => a.status === 'interview').length;
-    const offers         = state.applications.filter(a => a.status === 'offer').length;
+    const totalApplied   = _apps.filter(a => a.status !== 'saved').length;
+    const interviews     = _apps.filter(a => a.status === 'interview').length;
+    const offers         = _apps.filter(a => a.status === 'offer').length;
     const responseRate   = totalApplied > 0 ? Math.round((interviews + offers) / totalApplied * 100) : 0;
     const oneWeekAgo     = Date.now() - 7 * 24 * 60 * 60 * 1000;
-    const thisWeek       = state.applications.filter(a => new Date(a.date).getTime() > oneWeekAgo).length;
-    const needsFollowUp  = state.applications.filter(a =>
+    const thisWeek       = _apps.filter(a => new Date(a.date).getTime() > oneWeekAgo).length;
+    const needsFollowUp  = _apps.filter(a =>
       a.status === 'applied' &&
       (Date.now() - new Date(a.date).getTime()) > 7 * 24 * 60 * 60 * 1000
     ).length;
@@ -1192,7 +1215,7 @@ function renderDashboard() {
   }
 
   const recentEl = document.getElementById('dashRecentApps');
-  const recent   = [...state.applications].sort((a,b) => new Date(b.date) - new Date(a.date)).slice(0,5);
+  const recent   = [..._apps].sort((a,b) => new Date(b.date) - new Date(a.date)).slice(0,5);
 
   if (recent.length === 0) {
     recentEl.innerHTML = `<div class="empty-state">
@@ -1246,6 +1269,7 @@ function renderResumes() {
       <div class="card-sub">${wordCount(r.text)} words · Added ${fmtDate(r.date)}</div>
       <div class="card-actions">
         <button class="btn-link" data-action="view-resume" data-id="${r.id}">View</button>
+        <button class="btn-link" data-action="download-resume" data-id="${r.id}">Download</button>
         <button class="btn-link green" data-action="analyze-resume">Analyze</button>
         <button class="btn-link danger" data-action="delete-resume" data-id="${r.id}">Delete</button>
       </div>
@@ -1264,6 +1288,21 @@ window.deleteResume = async (id) => {
   await saveResumes();
   renderResumes();
   toast('Resume deleted');
+};
+
+window.downloadResume = (id) => {
+  const r = state.resumes.find(x => x.id === id);
+  if (!r) return;
+  const blob = new Blob([r.text], { type: 'text/plain;charset=utf-8' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = r.name.replace(/[^a-zA-Z0-9 _\-–]/g, '').trim() + '.txt';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  toast(`Downloaded "${r.name}"`, 'success', 3000);
 };
 
 // ═════════════════════════════════════════════════════════════════════
@@ -1295,7 +1334,7 @@ function renderJobs() {
 
   listEl.innerHTML = filtered.map(j => {
     const kws = extractKeywords(j.text).slice(0, 5);
-    const isApplied = state.applications.some(a => a.jobId === j.id && a.status === 'applied');
+    const isApplied = activeApps().some(a => a.jobId === j.id && a.status === 'applied');
     const emailHtml = j.recruiterEmail
       ? `<div class="recruiter-email">
            <svg width="10" height="10" viewBox="0 0 24 24" fill="none"><rect x="2" y="4" width="20" height="16" rx="2" stroke="currentColor" stroke-width="2"/><path d="M2 7l10 7 10-7" stroke="currentColor" stroke-width="2"/></svg>
@@ -1336,7 +1375,7 @@ window.deleteJob = async (id) => {
 };
 
 window.markJobAppliedFromList = (id) => {
-  const alreadyApplied = state.applications.some(a => a.jobId === id && a.status === 'applied');
+  const alreadyApplied = activeApps().some(a => a.jobId === id && a.status === 'applied');
   if (alreadyApplied) { toast('Already marked as applied', 'error', 2000); return; }
 
   const job = state.jobs.find(j => j.id === id);
@@ -1381,7 +1420,7 @@ window.confirmMarkApplied = async (jobId) => {
   const resumeId = (document.getElementById('appliedResumeSelect') || {}).value || '';
   const job    = state.jobs.find(j => j.id === jobId);
   const resume = state.resumes.find(r => r.id === resumeId);
-  const app = { id: uid(), jobId, resumeId, status: 'applied', notes: '', date: new Date().toISOString() };
+  const app = { id: uid(), jobId, resumeId, status: 'applied', notes: '', profileId: state.activeProfileId, date: new Date().toISOString() };
   state.applications.push(app);
   await save(SK.APPLICATIONS, state.applications);
   closeModal();
@@ -1419,8 +1458,9 @@ function populateAnalyzeSelects() {
   jSel.innerHTML = '<option value="">— Select a job —</option>' +
     state.jobs.map(j => `<option value="${j.id}">${escHtml(j.title)} – ${escHtml(j.company)}</option>`).join('');
 
-  if (rVal) rSel.value = rVal;
-  if (jVal) jSel.value = jVal;
+  // Only restore the previous selection if the option still exists in the current profile
+  if (rVal && rSel.querySelector(`option[value="${rVal}"]`)) rSel.value = rVal;
+  if (jVal && jSel.querySelector(`option[value="${jVal}"]`)) jSel.value = jVal;
 }
 
 function getSelectedResumeAndJob() {
@@ -1462,7 +1502,7 @@ async function doLocalMatch() {
       </div>
       <div style="flex:1">
         <div class="progress-bar"><div class="progress-fill" style="width:${match.score}%;background:${scoreColor(match.score)}"></div></div>
-        <div class="text-sm mt-4">${match.present.length} of ${match.total} JD keywords found in resume</div>
+        <div class="text-sm mt-4">${match.noSkillsFound ? 'Estimated from word overlap (no structured skills detected in JD)' : `${match.present.length} of ${match.total} JD keywords found in resume`}</div>
       </div>
     </div>
 
@@ -1495,51 +1535,93 @@ async function tailorResumeForJob(resume, job) {
     const activeP = state.profiles.find(x => x.id === state.activeProfileId) || state.profiles[0] || {};
     const candidateName = [activeP.firstName, activeP.lastName].filter(Boolean).join(' ') || 'Candidate';
 
-    const systemMsg = `You are an expert resume writer and ATS optimization specialist.
-Your job is to tailor an existing resume to better match a specific job description.
+    // Validate resume has enough content before calling AI
+    if (!resume.text || resume.text.trim().length < 200) {
+      toast('Resume text is too short to tailor. Please upload a more complete resume.', 'error', 5000);
+      return;
+    }
 
-CRITICAL RULES — you MUST follow these without exception:
-1. NEVER add skills, technologies, certifications, companies, or experiences the candidate does not already have.
-2. Only rephrase, reorder, and emphasize content that already exists in the resume.
-3. Use the exact keywords and phrases from the job description wherever the candidate's existing experience supports it.
-4. Adjust bullet points to lead with stronger action verbs aligned with the JD's language.
-5. Rewrite the professional summary/objective to mirror the JD's priorities.
-6. Keep all dates, company names, job titles, and factual details exactly as they appear.
-7. Do NOT invent metrics or numbers unless they already exist in the original resume.
-8. Output ONLY the full tailored resume text — no explanations, no commentary, no markdown fences.`;
+    const systemMsg = `You are a world-class resume writer and ATS optimization specialist with 15+ years of experience placing candidates at Fortune 500 companies, FAANG, and top startups. Your goal is to make this resume the #1 ATS match for the given job description while keeping 100% of the candidate's authentic experience intact.
+
+═══════════════════════════════════════════
+ABSOLUTE PRESERVATION RULES (NEVER BREAK)
+═══════════════════════════════════════════
+1. PRESERVE STRUCTURE EXACTLY — Keep every section heading (e.g. "Experience", "Education", "Skills", "Projects") exactly as they appear. Do not add, remove, rename, merge, or reorder sections.
+2. PRESERVE ALL JOBS & COMPANIES — Every company name, job title, employment date, and location must remain 100% identical character-for-character.
+3. PRESERVE ALL EDUCATION — Institution names, degrees, majors, graduation years, and GPA (if shown) must not change by even one character.
+4. PRESERVE ALL METRICS — If the resume says "increased revenue by 40%", keep it as "increased revenue by 40%". Never invent or alter numbers.
+5. PRESERVE CONTACT INFO — Name, email, phone, LinkedIn, GitHub, portfolio links — leave completely untouched.
+6. PRESERVE BULLET COUNT — Do not remove any existing bullet points. You may reword them but every bullet must remain present.
+7. NEVER FABRICATE — Do not add any skill, technology, tool, framework, certification, project, company, or achievement the candidate has not already mentioned.
+
+═══════════════════════════════════════════
+ATS OPTIMIZATION ACTIONS (APPLY AGGRESSIVELY)
+═══════════════════════════════════════════
+A. KEYWORD INJECTION — Identify the top 15-20 keywords and exact phrases from the job description. Weave them naturally into existing bullet points and the summary where the candidate's experience genuinely supports it. Prioritize exact matches (e.g., if JD says "cross-functional collaboration", use that exact phrase if you can).
+B. PROFESSIONAL SUMMARY — Completely rewrite the summary/objective section (if present) to mirror the JD's language, priorities, and tone. Highlight the candidate's most relevant experience for this specific role. If no summary exists, do NOT add one.
+C. SKILLS SECTION — Reorder existing skills to put JD-matching skills first. If the candidate has a skill that appears in the JD under a slightly different name (e.g., candidate says "Postgres", JD says "PostgreSQL"), standardize to match the JD's terminology.
+D. ACTION VERBS — Upgrade weak verbs in bullet points to stronger ones aligned with JD language (e.g., "worked on" → "engineered", "helped with" → "led"). Keep the factual content identical.
+E. QUANTIFY WHERE POSSIBLE — If an existing bullet implies scale or impact but lacks numbers, you may add approximate qualifiers like "multiple", "cross-team", "large-scale" — but NEVER invent specific metrics that aren't implied.
+F. RELEVANT BULLETS FIRST — Within each job's bullet list, reorder bullets so the most JD-relevant ones appear first. Do not add or remove bullets.
+
+═══════════════════════════════════════════
+OUTPUT FORMAT
+═══════════════════════════════════════════
+- Output ONLY the complete tailored resume text.
+- Maintain the exact same formatting style (plain text, spacing, bullet style) as the original.
+- No markdown fences, no code blocks, no explanations, no commentary before or after the resume.
+- The output must be ready to save and submit directly.`;
 
     const userMsg = `CANDIDATE NAME: ${candidateName}
-JOB TITLE: ${job.title || ''}
-COMPANY: ${job.company || ''}
+TARGET JOB TITLE: ${job.title || '(see JD)'}
+TARGET COMPANY: ${job.company || '(see JD)'}
 
-=== ORIGINAL RESUME ===
+═══════════════════════════════════════════
+ORIGINAL RESUME (DO NOT LOSE ANY OF THIS)
+═══════════════════════════════════════════
 ${resume.text}
 
-=== JOB DESCRIPTION ===
-${job.text.slice(0, 4000)}
+═══════════════════════════════════════════
+JOB DESCRIPTION (OPTIMIZE THE RESUME FOR THIS)
+═══════════════════════════════════════════
+${job.text.slice(0, 5000)}
 
-Tailor the resume above to maximise ATS match for this job. Follow all rules strictly.`;
+Now produce the fully ATS-optimized tailored resume. Follow ALL preservation rules strictly — this resume will be submitted directly, so accuracy of existing facts is critical. Maximize keyword density from the JD without fabricating anything.`;
 
-    const tailored = await callAI(userMsg, systemMsg);
+    let tailored = await callAI(userMsg, systemMsg);
+
+    // ── Post-process AI output ─────────────────────────────────────────
+    // 1. Strip markdown code fences if the model wrapped the output
+    tailored = tailored.replace(/^```[\w]*\n?/m, '').replace(/\n?```\s*$/m, '').trim();
+
+    // 2. Strip common preamble lines ("Here is your tailored resume:", etc.)
+    const preambleRe = /^(here is|here's|below is|sure[,!]?|certainly[,!]?|of course[,!]?|i've tailored|i have tailored|tailored resume:|your tailored resume[:\-]?)[^\n]*\n/i;
+    tailored = tailored.replace(preambleRe, '').trim();
+
+    // 3. Guard against empty or severely truncated output
+    if (!tailored || tailored.length < resume.text.length * 0.4) {
+      throw new Error('AI returned an incomplete resume. Try again or switch to a model with higher output limits.');
+    }
 
     // Name for the saved resume: "[Original Name] – [Company] [Title]"
     const safeCo    = (job.company || 'Company').replace(/[^a-zA-Z0-9 &]/g, '').trim().slice(0, 30);
     const safeTitle = (job.title   || 'Role')   .replace(/[^a-zA-Z0-9 &]/g, '').trim().slice(0, 30);
     const suggestedName = `${resume.name} – ${safeCo} ${safeTitle}`;
 
-    // Show preview modal with save option
+    // Show preview modal with save + download options
     const escapedText = escHtml(tailored);
     showHtmlModal('✨ Tailored Resume Preview', `
       <div style="margin-bottom:10px;font-size:12px;color:#6b7280">
-        Review the tailored version below. Only rephrasing was applied — no new skills were added.
+        Review the tailored version below. Keywords were injected and bullets were strengthened — all your facts, companies, and dates are preserved exactly.
       </div>
       <div style="margin-bottom:10px">
         <label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px">Save as:</label>
         <input id="tailoredResumeName" class="input" value="${escHtml(suggestedName)}" style="width:100%;box-sizing:border-box" />
       </div>
-      <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:12px;max-height:280px;overflow-y:auto;white-space:pre-wrap;font-size:11px;font-family:monospace;line-height:1.5">${escapedText}</div>
+      <div id="tailoredResumePreview" style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:12px;max-height:280px;overflow-y:auto;white-space:pre-wrap;font-size:11px;font-family:monospace;line-height:1.5">${escapedText}</div>
       <div style="display:flex;gap:8px;margin-top:12px">
-        <button class="btn-primary" onclick="window.saveTailoredResume()" style="flex:1">💾 Save to My Resumes</button>
+        <button class="btn-primary" onclick="window.saveTailoredResume()" style="flex:1">💾 Save to Library</button>
+        <button class="btn-ghost" onclick="window.downloadTailoredResume()" style="flex:1">📥 Download .txt</button>
         <button class="btn-ghost" onclick="closeModal()" style="flex:1">Discard</button>
       </div>
     `);
@@ -1549,7 +1631,24 @@ Tailor the resume above to maximise ATS match for this job. Follow all rules str
       await saveResume(name, tailored);
       closeModal();
       toast(`✓ "${name}" saved to your resumes`, 'success', 4000);
-      doLocalMatch(); // Refresh the match panel with the new resume auto-selected if it's better
+      // Only refresh local match if both dropdowns are already selected (avoid spurious error toast)
+      const rSel = document.getElementById('analyzeResume');
+      const jSel = document.getElementById('analyzeJob');
+      if (rSel?.value && jSel?.value) doLocalMatch();
+    };
+
+    window.downloadTailoredResume = () => {
+      const name = (document.getElementById('tailoredResumeName') || {}).value?.trim() || suggestedName;
+      const blob = new Blob([tailored], { type: 'text/plain;charset=utf-8' });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href     = url;
+      a.download = name.replace(/[^a-zA-Z0-9 _\-–]/g, '').trim() + '.txt';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      toast('Resume downloaded!', 'success', 3000);
     };
 
   } catch (err) {
@@ -1796,8 +1895,9 @@ const STATUS_CONFIG = {
 
 function renderTracker() {
   const board = document.getElementById('trackerBoard');
+  const profileApps = activeApps();
 
-  if (state.applications.length === 0) {
+  if (profileApps.length === 0) {
     board.innerHTML = `<div class="empty-state">
       <svg width="32" height="32" viewBox="0 0 24 24" fill="none"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12" stroke="#9ca3af" stroke-width="2"/></svg>
       <p>No applications tracked</p>
@@ -1807,7 +1907,7 @@ function renderTracker() {
   }
 
   board.innerHTML = Object.entries(STATUS_CONFIG).map(([status, cfg]) => {
-    let apps = state.applications.filter(a => a.status === status);
+    let apps = profileApps.filter(a => a.status === status);
     if (trackerSearch) {
       apps = apps.filter(a => {
         const job    = state.jobs.find(j => j.id === a.jobId);
@@ -2164,7 +2264,7 @@ function wireEvents() {
     const status   = document.getElementById('appStatusSelect').value;
     const notes    = document.getElementById('appNotes').value.trim();
     if (!jobId) { toast('Please select a job', 'error'); return; }
-    const app = { id: uid(), jobId, resumeId, status, notes, date: new Date().toISOString() };
+    const app = { id: uid(), jobId, resumeId, status, notes, profileId: state.activeProfileId, date: new Date().toISOString() };
     state.applications.push(app);
     await save(SK.APPLICATIONS, state.applications);
     document.getElementById('addAppForm').classList.add('hidden');
@@ -2264,9 +2364,10 @@ function wireEvents() {
     if (!btn) return;
     const action = btn.dataset.action;
     const id = btn.dataset.id;
-    if (action === 'view-resume')   window.viewResume(id);
-    if (action === 'analyze-resume') switchTab('analyze');
-    if (action === 'delete-resume') window.deleteResume(id);
+    if (action === 'view-resume')     window.viewResume(id);
+    if (action === 'download-resume') window.downloadResume(id);
+    if (action === 'analyze-resume')  switchTab('analyze');
+    if (action === 'delete-resume')   window.deleteResume(id);
   });
 
   // Jobs list
@@ -2323,8 +2424,9 @@ function wireEvents() {
     }
     if (msg.type === 'JD_AUTO_SAVED') {
       // Reload jobs from storage then show banner
-      chrome.storage.local.get('jt_jobs').then(data => {
-        state.jobs = data['jt_jobs'] || [];
+      chrome.storage.local.get(SK.JOBS).then(data => {
+        state.jobs = data[SK.JOBS] || [];
+        if (state.activeTab === 'jobs') renderJobs(); // keep jobs list fresh
         const job = state.jobs.find(j => j.id === msg.jobId);
         if (job) showJobBanner(job, msg.isNew);
       });
@@ -2333,8 +2435,15 @@ function wireEvents() {
       switchTab(msg.tab);
     }
     if (msg.type === 'JOB_MARKED_APPLIED') {
-      chrome.storage.local.get(SK.APPLICATIONS).then(data => {
+      chrome.storage.local.get(SK.APPLICATIONS).then(async data => {
         state.applications = data[SK.APPLICATIONS] || [];
+        // Stamp the active profileId on the app that was just created by the service worker
+        // (service worker has no knowledge of which profile is active)
+        const app = state.applications.find(a => a.id === msg.appId);
+        if (app && !app.profileId) {
+          app.profileId = state.activeProfileId;
+          await save(SK.APPLICATIONS, state.applications);
+        }
         renderDashboard();
         renderTracker();
 
@@ -2422,7 +2531,38 @@ async function saveResume(name, text) {
   toast(`✓ Resume "${name}" saved`, 'success');
 }
 
+// Strip query params + trailing slash for URL comparison
+function normalizeJobUrl(url) {
+  if (!url) return '';
+  try { return new URL(url).origin + new URL(url).pathname.replace(/\/$/, ''); }
+  catch { return url.split('?')[0].split('#')[0].replace(/\/$/, ''); }
+}
+
 async function saveJob(data) {
+  // Dedup by URL (ignoring query params / tracking tokens)
+  if (data.url) {
+    const norm = normalizeJobUrl(data.url);
+    const existing = state.jobs.find(j => j.url && normalizeJobUrl(j.url) === norm);
+    if (existing) {
+      toast('Already in your library', '', 2500);
+      return existing;
+    }
+  }
+
+  // Fallback dedup by title + company (for jobs captured without a URL)
+  if (data.title && data.company && data.company !== 'Unknown') {
+    const tLow = data.title.toLowerCase().trim();
+    const cLow = data.company.toLowerCase().trim();
+    const existing = state.jobs.find(j =>
+      j.title.toLowerCase().trim() === tLow &&
+      j.company.toLowerCase().trim() === cLow
+    );
+    if (existing) {
+      toast('Already in your library', '', 2500);
+      return existing;
+    }
+  }
+
   const job = {
     id: uid(),
     title: data.title,
@@ -2438,6 +2578,7 @@ async function saveJob(data) {
   await save(SK.JOBS, state.jobs);
   renderJobs();
   toast(`✓ Job "${data.title}" saved`, 'success');
+  return job;
 }
 
 async function triggerCaptureFromCurrentTab() {
