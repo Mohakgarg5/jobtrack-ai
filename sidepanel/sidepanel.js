@@ -1434,7 +1434,7 @@ window.analyzeWith = (jobId) => {
   switchTab('analyze');
   setTimeout(() => {
     const sel = document.getElementById('analyzeJob');
-    if (sel) { sel.value = jobId; populateAnalyzeSelects(); }
+    if (sel) { sel.value = jobId; populateAnalyzeSelects(); autoSelectBestResume(jobId); }
   }, 100);
 };
 
@@ -1458,9 +1458,13 @@ function populateAnalyzeSelects() {
   jSel.innerHTML = '<option value="">— Select a job —</option>' +
     state.jobs.map(j => `<option value="${j.id}">${escHtml(j.title)} – ${escHtml(j.company)}</option>`).join('');
 
-  // Only restore the previous selection if the option still exists in the current profile
-  if (rVal && rSel.querySelector(`option[value="${rVal}"]`)) rSel.value = rVal;
+  // Restore job selection only (not resume — resume is always auto-picked below)
   if (jVal && jSel.querySelector(`option[value="${jVal}"]`)) jSel.value = jVal;
+
+  // Always auto-select the best matching resume for whatever job is selected
+  if (jSel.value) {
+    autoSelectBestResume(jSel.value);
+  }
 }
 
 function getSelectedResumeAndJob() {
@@ -2665,12 +2669,12 @@ function autoSelectBestResume(jobId) {
   const job = state.jobs.find(j => j.id === jobId);
   if (!job) return;
 
-  // Score each resume using multi-factor scoring (text similarity + title match + keywords)
+  // Score each resume using the same keyword match shown in the UI
   let bestId    = state.resumes[0].id;
   let bestScore = -1;
 
   for (const resume of state.resumes) {
-    const score = computeResumeJobScore(resume.text, job.text, job.title);
+    const { score } = getLocalMatch(resume.text || '', job.text || '');
     if (score > bestScore) { bestScore = score; bestId = resume.id; }
   }
 

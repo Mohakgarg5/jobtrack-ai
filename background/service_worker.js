@@ -7,6 +7,10 @@ chrome.action.onClicked.addListener((tab) => {
   chrome.sidePanel.open({ windowId: tab.windowId });
 });
 
+function safeNotify(msg) {
+  try { chrome.runtime.sendMessage(msg).catch(() => {}); } catch (_) {}
+}
+
 // Listen for messages from content script and popup
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'OPEN_SIDEPANEL') {
@@ -34,7 +38,7 @@ function normalizeJobUrl(url) {
 }
 
 async function autoSaveJD(jdData, tab) {
-  if (!jdData || !jdData.description || jdData.description.length < 100) return;
+  if (!jdData || !jdData.description || jdData.description.length < 50) return;
 
   const stored = await chrome.storage.local.get(JT_JOBS_KEY);
   const jobs   = stored[JT_JOBS_KEY] || [];
@@ -47,11 +51,7 @@ async function autoSaveJD(jdData, tab) {
     // Already in library — just show a green badge
     const existing = jobs.find(j => normalizeJobUrl(j.url) === norm);
     setBadge(tab.id, '✓', '#059669');
-    chrome.runtime.sendMessage({
-      type: 'JD_AUTO_SAVED',
-      jobId: existing.id,
-      isNew: false
-    }).catch(() => {});
+    safeNotify({ type: 'JD_AUTO_SAVED', jobId: existing.id, isNew: false });
     return;
   }
 
@@ -74,12 +74,7 @@ async function autoSaveJD(jdData, tab) {
   setBadge(tab.id, 'JD', '#4f46e5');
 
   // Notify side panel if open
-  chrome.runtime.sendMessage({
-    type: 'JD_AUTO_SAVED',
-    jobId: newJob.id,
-    job:   newJob,
-    isNew: true
-  }).catch(() => {}); // Side panel might not be open — that's fine
+  safeNotify({ type: 'JD_AUTO_SAVED', jobId: newJob.id, job: newJob, isNew: true });
 }
 
 async function handleApplyClick(data, tab) {
@@ -114,7 +109,7 @@ async function handleApplyClick(data, tab) {
     await chrome.storage.local.set({ jt_jobs: jobs });
     job = newJob;
     setBadge(tab.id, 'JD', '#4f46e5');
-    chrome.runtime.sendMessage({ type: 'JD_AUTO_SAVED', jobId: newJob.id, isNew: true }).catch(() => {});
+    safeNotify({ type: 'JD_AUTO_SAVED', jobId: newJob.id, isNew: true });
   }
 
   if (!job) return; // No JD available — can't mark
@@ -131,14 +126,12 @@ async function handleApplyClick(data, tab) {
   await chrome.storage.local.set({ jt_applications: applications });
 
   setBadge(tab.id, '✓', '#059669');
-  chrome.runtime.sendMessage({
-    type: 'JOB_MARKED_APPLIED', jobId: job.id, appId: newApp.id, title: job.title, company: job.company
-  }).catch(() => {});
+  safeNotify({ type: 'JOB_MARKED_APPLIED', jobId: job.id, appId: newApp.id, title: job.title, company: job.company });
 }
 
 function setBadge(tabId, text, color) {
-  chrome.action.setBadgeText({ text, tabId });
-  chrome.action.setBadgeBackgroundColor({ color, tabId });
+  chrome.action.setBadgeText({ text, tabId }).catch(() => {});
+  chrome.action.setBadgeBackgroundColor({ color, tabId }).catch(() => {});
 }
 
 // Clear badge when user leaves a job page
@@ -146,4 +139,31 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (changeInfo.status === 'loading') {
     chrome.action.setBadgeText({ text: '', tabId }).catch(() => {});
   }
+});
+
+// ── Auto-capture on SPA navigation (LinkedIn search/collections) ──────────────
+// webNavigation.onHistoryStateUpdated fires for every history.pushState call,
+// making it far more reliable than MutationObserver in the content script.
+chrome.webNavigation.onHistoryStateUpdated.addListener(async (details) => {
+  const url = details.url || '';
+  // Only act on LinkedIn job pages with a specific job selected
+  if (!url.includes('linkedin.com/jobs')) return;
+  if (!url.includes('currentJobId=')) return;
+
+  const tabId = details.tabId;
+
+  // Wait for the job panel content to render
+  setTimeout(async () => {
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ['content/content.js']
+      }).catch(() => {});
+
+      const response = await chrome.tabs.sendMessage(tabId, { type: 'CAPTURE_JD' });
+      if (response?.success && response.data?.description?.length > 50) {
+        await autoSaveJD(response.data, { id: tabId, url });
+      }
+    } catch (_) {}
+  }, 3500);
 });

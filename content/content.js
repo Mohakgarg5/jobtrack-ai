@@ -24,21 +24,39 @@
       title = title || getTextFromSelectors([
         '.job-details-jobs-unified-top-card__job-title h1',
         '.jobs-unified-top-card__job-title',
+        '.job-details-jobs-unified-top-card__job-title',
+        '.jobs-unified-top-card__job-title h1',
+        '.job-view-layout h1',
+        '.scaffold-layout__detail h1',
         'h1.t-24'
       ]);
       company = company || getTextFromSelectors([
+        '.job-details-jobs-unified-top-card__company-name a',
         '.job-details-jobs-unified-top-card__company-name',
         '.jobs-unified-top-card__company-name a',
-        '.topcard__org-name-link'
+        '.jobs-unified-top-card__company-name',
+        '.job-details-jobs-unified-top-card__primary-description a',
+        '.topcard__org-name-link',
+        'a[data-tracking-control-name*="topcard-org"]'
       ]);
+      // Fallback: extract from page title "Job Title at Company | LinkedIn"
+      if (!company) {
+        const atMatch = document.title.match(/\bat\s+(.+?)\s*[|\u2013\u2014]/);
+        if (atMatch) company = atMatch[1].trim();
+      }
       location = location || getTextFromSelectors([
         '.job-details-jobs-unified-top-card__bullet',
         '.jobs-unified-top-card__workplace-type'
       ]);
       description = description || getTextFromSelectors([
+        '#job-details',
         '.jobs-description__content .jobs-box__html-content',
         '.jobs-description-content__text',
-        '#job-details'
+        '.jobs-description-content__text--stretch',
+        '.jobs-description__content',
+        '.jobs-box__html-content',
+        '[class*="jobs-description-content"]',
+        '.jobs-search__job-details--container'
       ]);
     }
 
@@ -675,13 +693,24 @@
       company = extractCompanyFromDomain();
     }
 
+    // For LinkedIn search/collections pages, use the canonical job URL so that
+    // each job gets a unique URL (the search page URL normalizes to the same
+    // string for every job, breaking deduplication).
+    let captureUrl = window.location.href;
+    if (hostname.includes('linkedin.com')) {
+      try {
+        const currentJobId = new URL(window.location.href).searchParams.get('currentJobId');
+        if (currentJobId) captureUrl = `https://www.linkedin.com/jobs/view/${currentJobId}/`;
+      } catch (_) {}
+    }
+
     return {
       title:          decodeEntities(cleanText(title))   || 'Untitled Job',
       company:        decodeEntities(cleanText(company)) || extractCompanyFromDomain(),
       location:       decodeEntities(cleanText(location)),
       description:    cleanText(description),
       recruiterEmail: extractRecruiterEmail(),
-      url:            window.location.href,
+      url:            captureUrl,
       source:         hostname.replace('www.', '').split('.')[0],
       capturedAt:     new Date().toISOString()
     };
@@ -812,10 +841,13 @@
       .trim();
   }
 
+  // Job board names that should never be used as the company name
+  const JOB_BOARD_NAMES = /^(linkedin|indeed|glassdoor|ziprecruiter|monster|dice|simplyhired|careerbuilder|naukri|wellfound|angellist)$/i;
+
   function extractCompanyFromDomain() {
-    // 1. og:site_name meta tag (most reliable for company career portals)
+    // 1. og:site_name — skip if it's a job board name (e.g. "LinkedIn")
     const ogSite = document.querySelector('meta[property="og:site_name"]');
-    if (ogSite && ogSite.content && ogSite.content.trim().length > 1) return ogSite.content.trim();
+    if (ogSite && ogSite.content && ogSite.content.trim().length > 1 && !JOB_BOARD_NAMES.test(ogSite.content.trim())) return ogSite.content.trim();
 
     // 2. Page title — if pattern is "Job Title | Company Name" or "Job Title – Company Name"
     const titleParts = document.title.split(/[|–\-—]/);
@@ -827,11 +859,13 @@
       }
     }
 
-    // 3. Fall back to hostname
+    // 3. Fall back to hostname (skip if it's a known job board)
     const clean = hostname.replace('www.', '').replace('jobs.', '').replace('careers.', '');
     const parts = clean.split('.');
     const name = parts[0];
-    return name.charAt(0).toUpperCase() + name.slice(1);
+    const result = name.charAt(0).toUpperCase() + name.slice(1);
+    if (JOB_BOARD_NAMES.test(result)) return '';
+    return result;
   }
 
   // ── Recruiter email extraction ───────────────────────────────────────
@@ -862,17 +896,41 @@
     return '';
   }
 
+  // ── Safe message sender — silently drops messages if extension was reloaded ──
+  function safeSendMessage(msg) {
+    try {
+      if (!chrome.runtime?.id) return; // context already gone
+      chrome.runtime.sendMessage(msg).catch(() => {});
+    } catch (_) {}
+  }
+
   // ── Send job data to background ─────────────────────────────────────────
   function sendJobData(data) {
     if (!data.description || data.description.length < 50) return;
-    chrome.runtime.sendMessage({
-      type: 'JD_CAPTURED',
-      data: data
-    }).catch(() => {});
+    safeSendMessage({ type: 'JD_CAPTURED', data });
+  }
+
+  // Returns true only when the current URL looks like a job posting (not a profile, feed, etc.)
+  function isLikelyJobPage() {
+    const url = window.location.href;
+    if (hostname.includes('linkedin.com')) {
+      // Direct job view pages are always valid
+      if (/\/jobs\/view\//i.test(url)) return true;
+      // Search pages: always allow (job is shown in the right panel)
+      if (/\/jobs\/search\//i.test(url)) return true;
+      // Collections pages (e.g. "Top job picks for you"): only capture when
+      // a specific job is open in the panel (currentJobId in URL)
+      if (/\/jobs\/collections\//i.test(url)) {
+        return /[?&]currentJobId=\d+/.test(url);
+      }
+      return false;
+    }
+    return true; // all other known job-site hostnames are fine
   }
 
   // Run extraction after a delay to let dynamic content load
   setTimeout(() => {
+    if (!isLikelyJobPage()) return;
     const jobData = extractJobData();
     if (jobData.description && jobData.description.length > 100) {
       sendJobData(jobData);
@@ -1021,10 +1079,7 @@
     try {
       const filled = await tryAutoFill();
       if (filled > 0) {
-        chrome.runtime.sendMessage({
-          type: 'AUTOFILL_COMPLETE',
-          count: filled
-        }).catch(() => {});
+        safeSendMessage({ type: 'AUTOFILL_COMPLETE', count: filled });
       }
     } catch (_) {}
   }, 2500);
@@ -1042,25 +1097,36 @@
     // Match "Apply", "Apply Now", "Quick Apply", "Easy Apply", etc.
     // but NOT "Applied", "Application", "View Applications"
     if (/\bapply\b/i.test(text) && !/\bapplied\b|\bapplication/i.test(text)) {
-      chrome.runtime.sendMessage({
-        type: 'APPLY_CLICKED',
-        data: { url: window.location.href, jobData: extractJobData() }
-      }).catch(() => {});
+      safeSendMessage({ type: 'APPLY_CLICKED', data: { url: window.location.href, jobData: extractJobData() } });
     }
   }, true); // capture phase — fires before potential page navigation
 
   // ── Re-capture on SPA navigation (LinkedIn, Indeed, etc.) ────────────────────
   let _jtLastUrl = location.href;
-  new MutationObserver(() => {
-    if (location.href !== _jtLastUrl) {
-      _jtLastUrl = location.href;
-      clearTimeout(window._jtSpaTimer);
-      window._jtSpaTimer = setTimeout(() => {
-        const jobData = extractJobData();
-        if (jobData.description && jobData.description.length > 100) sendJobData(jobData);
-      }, 2500);
-    }
-  }).observe(document, { subtree: true, childList: true });
+
+  function _jtOnUrlChange() {
+    if (location.href === _jtLastUrl) return;
+    _jtLastUrl = location.href;
+    clearTimeout(window._jtSpaTimer);
+    window._jtSpaTimer = setTimeout(() => {
+      if (!isLikelyJobPage()) return;
+      const jobData = extractJobData();
+      if (jobData.description && jobData.description.length > 100) sendJobData(jobData);
+    }, 4000);
+  }
+
+  // Watch DOM mutations (catches React/Vue re-renders)
+  new MutationObserver(_jtOnUrlChange).observe(document, { subtree: true, childList: true });
+
+  // Also intercept history.pushState / replaceState directly — LinkedIn uses pushState
+  // to update currentJobId in the URL, which may fire BEFORE or AFTER DOM mutations.
+  (function () {
+    const _push = history.pushState.bind(history);
+    const _replace = history.replaceState.bind(history);
+    history.pushState = function (...a) { _push(...a); _jtOnUrlChange(); };
+    history.replaceState = function (...a) { _replace(...a); _jtOnUrlChange(); };
+  })();
+  window.addEventListener('popstate', _jtOnUrlChange);
 
   // Listen for explicit capture requests from popup
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
