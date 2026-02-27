@@ -1321,16 +1321,246 @@ window.downloadResumePdf = (id) => {
   setTimeout(() => URL.revokeObjectURL(url), 60000);
 };
 
+// ── Generate a formatted PDF from resume text ─────────────────────────
+function textToPdf(text) {
+  const PW = 612, PH = 792;
+  const MX = 50;                    // left/right margin
+  const CW = PW - 2 * MX;          // content width = 512pt
+  const TOP = 748, BOT = 52;        // usable y range
+
+  // Helvetica average char width factor (pts per pt of font size)
+  const CWR = 0.556, CWB = 0.600;
+  const tw = (s, fs, bold) => s.length * fs * (bold ? CWB : CWR);
+
+  // Escape PDF string: handle special chars + common Unicode
+  const pesc = s => (s || '')
+    .replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)')
+    .replace(/\u2013|\u2014/g, '-')
+    .replace(/\u2018|\u2019/g, "'").replace(/\u201C|\u201D/g, '"')
+    .replace(/[^\x20-\x7E]/g, ' ');
+
+  // Word-wrap a string to fit maxPts width
+  function wrapLine(str, fs, bold, maxPts) {
+    const max = Math.floor(maxPts / (fs * (bold ? CWB : CWR)));
+    if (str.length <= max) return [str];
+    const out = [], words = str.split(' ');
+    let cur = '';
+    for (const w of words) {
+      const t = cur ? cur + ' ' + w : w;
+      if (t.length <= max) { cur = t; }
+      else { if (cur) out.push(cur); cur = w.slice(0, max); }
+    }
+    if (cur) out.push(cur);
+    return out.length ? out : [str.slice(0, max)];
+  }
+
+  // Date pattern (month YYYY – month YYYY | Present)
+  const DP = '((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\\s+\\d{4}' +
+             '\\s*[\\u2013\\-]\\s*(?:(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\\s+)?(?:\\d{4}|Present))';
+  function extractDate(line) {
+    let m = line.match(new RegExp('^(.+?)\\s+' + DP + '\\s*$', 'i'));
+    if (m) return { left: m[1].trim(), date: m[2].trim() };
+    m = line.match(new RegExp('^(.+?)\\s*\\|\\s*' + DP + '\\s*$', 'i'));
+    if (m) return { left: m[1].trim(), date: m[2].trim() };
+    return null;
+  }
+
+  // ── Parse resume text into typed render items ──────────────────────
+  const raw = text.split('\n').map(l => l.trim());
+  const items = [];
+  let i = 0;
+  while (i < raw.length && !raw[i]) i++;
+
+  // Name + contact header
+  if (i < raw.length) {
+    const first = raw[i];
+    if (first.includes('|')) {
+      const pi = first.indexOf('|');
+      const namePart = first.slice(0, pi).trim();
+      const rest     = first.slice(pi + 1).trim();
+      if (namePart && !namePart.includes('@') && !/\+?\d[\d\s\-()]{5,}/.test(namePart)) {
+        items.push({ type: 'name',    text: namePart });
+        items.push({ type: 'contact', text: rest });
+      } else {
+        items.push({ type: 'contact', text: first });
+      }
+    } else {
+      items.push({ type: 'name', text: first });
+      i++;
+      while (i < raw.length && !raw[i]) i++;
+      if (i < raw.length &&
+          (raw[i].includes('|') || raw[i].includes('@') || /\+?\d[\d\s\-()]{5,}/.test(raw[i]))) {
+        items.push({ type: 'contact', text: raw[i] });
+      } else { i--; }
+    }
+    i++;
+  }
+
+  for (; i < raw.length; i++) {
+    const line = raw[i];
+    if (!line) { items.push({ type: 'gap' }); continue; }
+    // ALL-CAPS section heading
+    if (/^[A-Z][A-Z\s&\/\-]{2,}$/.test(line) && !/\d/.test(line) &&
+        !line.includes('|') && !/^[•\-\*]/.test(line)) {
+      items.push({ type: 'section', text: line.trim() }); continue;
+    }
+    // Bullet
+    if (/^[•\-\*]\s/.test(line)) {
+      items.push({ type: 'bullet', text: line.replace(/^[•\-\*]\s*/, '').trim() }); continue;
+    }
+    // Entry with date
+    const ed = extractDate(line);
+    if (ed) { items.push({ type: 'entry', left: ed.left, date: ed.date }); continue; }
+    // Regular / subtitle text
+    items.push({ type: 'text', text: line });
+  }
+
+  // ── Render items → PDF drawing commands ────────────────────────────
+  const BLUE = [0.18, 0.46, 0.71];
+  const pages = [];
+  let cmds = [], y = TOP;
+
+  function newPage() {
+    if (cmds.length) pages.push(cmds);
+    cmds = []; y = TOP;
+  }
+  function need(h) { if (y - h < BOT) newPage(); }
+
+  // Absolute-position text element (saves/restores colour state)
+  function txt(str, x, yy, fs, bold, rgb) {
+    const [r, g, b] = rgb || [0, 0, 0];
+    cmds.push(`q ${r} ${g} ${b} rg BT ${bold?'/F2':'/F1'} ${fs} Tf 1 0 0 1 ${x.toFixed(1)} ${yy.toFixed(1)} Tm (${pesc(str)}) Tj ET Q\n`);
+  }
+  // Horizontal rule
+  function rule(yy, rgb) {
+    const [r, g, b] = rgb || [0, 0, 0];
+    cmds.push(`q 0.5 w ${r} ${g} ${b} RG ${MX} ${yy.toFixed(1)} m ${PW-MX} ${yy.toFixed(1)} l S Q\n`);
+  }
+
+  let prevType = '';
+  for (const item of items) {
+
+    if (item.type === 'name') {
+      const fs = 18, lh = 26;
+      need(lh);
+      const x = Math.max(MX, (PW - tw(item.text, fs, true)) / 2);
+      txt(item.text, x, y, fs, true);
+      y -= lh;
+
+    } else if (item.type === 'contact') {
+      const fs = 10, lh = 15;
+      const line = item.text.split(/\s*\|\s*/).map(t => t.trim()).filter(Boolean).join('  |  ');
+      const wrapped = wrapLine(line, fs, false, CW);
+      need(wrapped.length * lh + 4);
+      for (const wl of wrapped) {
+        const x = Math.max(MX, (PW - tw(wl, fs, false)) / 2);
+        txt(wl, x, y, fs, false, [0.25, 0.25, 0.25]);
+        y -= lh;
+      }
+      y -= 4;
+
+    } else if (item.type === 'gap') {
+      y -= 4;
+
+    } else if (item.type === 'section') {
+      const fs = 11, lh = 20;
+      need(lh + 8);
+      y -= 6;
+      txt(item.text, MX, y, fs, true, BLUE);
+      rule(y - 2, BLUE);
+      y -= lh;
+
+    } else if (item.type === 'entry') {
+      const fs = 10.5, lh = 15;
+      const dateFS = 9.5;
+      const dateW = tw(item.date, dateFS, false);
+      const dx = PW - MX - dateW;
+      const leftLines = wrapLine(item.left, fs, true, dx - MX - 8);
+      need(lh * leftLines.length);
+      txt(leftLines[0], MX, y, fs, true);
+      txt(item.date, dx, y, dateFS, false, [0.4, 0.4, 0.4]);
+      y -= lh;
+      for (let k = 1; k < leftLines.length; k++) {
+        need(lh); txt(leftLines[k], MX, y, fs, true); y -= lh;
+      }
+
+    } else if (item.type === 'bullet') {
+      const fs = 10.5, lh = 14;
+      const indentX = MX + 14;
+      const wrapped = wrapLine(item.text, fs, false, CW - 14);
+      need(lh);
+      for (let k = 0; k < wrapped.length; k++) {
+        if (k > 0 && y - lh < BOT) newPage();
+        if (k === 0) txt('-', MX + 2, y, fs, false);
+        txt(wrapped[k], indentX, y, fs, false);
+        y -= lh;
+      }
+
+    } else if (item.type === 'text') {
+      // Subtitle line (immediately after an entry): slightly smaller + gray
+      const isSubtitle = prevType === 'entry';
+      const fs = isSubtitle ? 10 : 10.5, lh = 14;
+      const color = isSubtitle ? [0.25, 0.25, 0.25] : [0, 0, 0];
+      const wrapped = wrapLine(item.text, fs, false, CW);
+      for (const wl of wrapped) {
+        need(lh);
+        txt(wl, MX + (isSubtitle ? 2 : 0), y, fs, false, color);
+        y -= lh;
+      }
+    }
+
+    prevType = item.type;
+  }
+
+  if (cmds.length) pages.push(cmds);
+  if (!pages.length) pages.push([]);
+
+  // ── Assemble PDF objects ────────────────────────────────────────────
+  // IDs: 1=Catalog, 2=Pages, 3..2+nP=Page, 3+nP..2+2nP=Content, 3+2nP=F1(reg), 4+2nP=F2(bold)
+  const nP = pages.length;
+  const FP = 3, FC = FP + nP, FT1 = FC + nP, FT2 = FT1 + 1, TOTAL = FT2;
+
+  const obj = {};
+  obj[1] = `<< /Type /Catalog /Pages 2 0 R >>\n`;
+  obj[2] = `<< /Type /Pages /Kids [${Array.from({length:nP},(_,p)=>`${FP+p} 0 R`).join(' ')}] /Count ${nP} >>\n`;
+  for (let p = 0; p < nP; p++) {
+    obj[FP+p] = `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${PW} ${PH}]\n` +
+                `   /Contents ${FC+p} 0 R /Resources << /Font << /F1 ${FT1} 0 R /F2 ${FT2} 0 R >> >> >>\n`;
+    const s = pages[p].join('');
+    obj[FC+p] = `<< /Length ${s.length} >>\nstream\n${s}endstream\n`;
+  }
+  obj[FT1] = `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>\n`;
+  obj[FT2] = `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>\n`;
+
+  // Build body with byte-accurate xref offsets
+  const hdr = '%PDF-1.4\n';
+  let off = hdr.length;
+  const offsets = {}, parts = [];
+  for (let n = 1; n <= TOTAL; n++) {
+    offsets[n] = off;
+    const s = `${n} 0 obj\n${obj[n]}endobj\n`;
+    parts.push(s); off += s.length;
+  }
+  const body = parts.join('');
+  const xref = `xref\n0 ${TOTAL+1}\n0000000000 65535 f \n` +
+    Array.from({length: TOTAL}, (_, k) => offsets[k+1].toString().padStart(10,'0') + ' 00000 n \n').join('');
+  return hdr + body + xref +
+    `trailer\n<< /Size ${TOTAL+1} /Root 1 0 R >>\nstartxref\n${hdr.length+body.length}\n%%EOF\n`;
+}
+
 // ── Attach resume to file input on the active job page ────────────────
 async function attachResumeToPage(id) {
   const r = state.resumes.find(x => x.id === id);
   if (!r) return;
 
-  // Build a clean filename: FirstName_Resume_ResumeName.txt
+  // Build a clean filename as .pdf — accepted universally by job sites
   const activeP = state.profiles.find(x => x.id === state.activeProfileId) || state.profiles[0] || {};
   const firstName = (activeP.firstName || 'Resume').replace(/[^a-zA-Z0-9]/g, '');
   const cleanName = r.name.replace(/[^a-zA-Z0-9_\- ]/g, '').trim().replace(/\s+/g, '_');
-  const filename  = `${firstName}_Resume_${cleanName}.txt`;
+  const filename  = `${firstName}_Resume_${cleanName}.pdf`;
+
+  // Generate PDF in sidepanel context, then pass the string to the page
+  const pdfContent = textToPdf(r.text);
 
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -1338,7 +1568,7 @@ async function attachResumeToPage(id) {
 
     const results = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
-      func: (text, fname) => {
+      func: (pdf, fname) => {
         // Find all file inputs; prefer ones hinting at resume/CV upload
         const inputs = [...document.querySelectorAll('input[type="file"]')];
         if (inputs.length === 0) return { ok: false, msg: 'No file upload field found on this page' };
@@ -1350,9 +1580,9 @@ async function attachResumeToPage(id) {
           return /resume|cv|upload|document|attach/i.test(hint);
         }) || inputs[0];
 
-        // Create a File and inject it
-        const blob = new Blob([text], { type: 'text/plain' });
-        const file = new File([blob], fname, { type: 'text/plain' });
+        // Create a PDF File — universally accepted by job sites
+        const blob = new Blob([pdf], { type: 'application/pdf' });
+        const file = new File([blob], fname, { type: 'application/pdf' });
         const dt   = new DataTransfer();
         dt.items.add(file);
         target.files = dt.files;
@@ -1363,7 +1593,7 @@ async function attachResumeToPage(id) {
         target.scrollIntoView({ behavior: 'smooth', block: 'center' });
         return { ok: true };
       },
-      args: [r.text, filename]
+      args: [pdfContent, filename]
     });
 
     const res = results?.[0]?.result;
