@@ -1273,6 +1273,7 @@ function renderResumes() {
         <button class="btn-link" data-action="view-resume" data-id="${r.id}">View</button>
         <button class="btn-link" data-action="download-resume-pdf" data-id="${r.id}">PDF</button>
         <button class="btn-link" data-action="download-resume" data-id="${r.id}">.txt</button>
+        <button class="btn-link" data-action="attach-resume" data-id="${r.id}" title="Inject this resume into the file upload field on the active job page">📎 Attach</button>
         <button class="btn-link green" data-action="analyze-resume">Analyze</button>
         <button class="btn-link danger" data-action="delete-resume" data-id="${r.id}">Delete</button>
       </div>
@@ -1319,6 +1320,62 @@ window.downloadResumePdf = (id) => {
   if (!win) toast('Allow popups for this extension to open PDF', 'error', 4000);
   setTimeout(() => URL.revokeObjectURL(url), 60000);
 };
+
+// ── Attach resume to file input on the active job page ────────────────
+async function attachResumeToPage(id) {
+  const r = state.resumes.find(x => x.id === id);
+  if (!r) return;
+
+  // Build a clean filename: FirstName_Resume_ResumeName.txt
+  const activeP = state.profiles.find(x => x.id === state.activeProfileId) || state.profiles[0] || {};
+  const firstName = (activeP.firstName || 'Resume').replace(/[^a-zA-Z0-9]/g, '');
+  const cleanName = r.name.replace(/[^a-zA-Z0-9_\- ]/g, '').trim().replace(/\s+/g, '_');
+  const filename  = `${firstName}_Resume_${cleanName}.txt`;
+
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) { toast('No active tab found', 'error'); return; }
+
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: (text, fname) => {
+        // Find all file inputs; prefer ones hinting at resume/CV upload
+        const inputs = [...document.querySelectorAll('input[type="file"]')];
+        if (inputs.length === 0) return { ok: false, msg: 'No file upload field found on this page' };
+
+        const target = inputs.find(inp => {
+          const hint = [inp.getAttribute('aria-label'), inp.id, inp.name,
+                        inp.getAttribute('data-testid'), inp.getAttribute('placeholder')]
+            .filter(Boolean).join(' ').toLowerCase();
+          return /resume|cv|upload|document|attach/i.test(hint);
+        }) || inputs[0];
+
+        // Create a File and inject it
+        const blob = new Blob([text], { type: 'text/plain' });
+        const file = new File([blob], fname, { type: 'text/plain' });
+        const dt   = new DataTransfer();
+        dt.items.add(file);
+        target.files = dt.files;
+        target.dispatchEvent(new Event('change', { bubbles: true }));
+        target.dispatchEvent(new Event('input',  { bubbles: true }));
+
+        // Scroll the input into view so user can confirm
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return { ok: true };
+      },
+      args: [r.text, filename]
+    });
+
+    const res = results?.[0]?.result;
+    if (res?.ok) {
+      toast(`📎 "${r.name}" attached to upload field`, 'success', 3500);
+    } else {
+      toast(res?.msg || 'Could not attach — try downloading the PDF instead', 'error', 4000);
+    }
+  } catch (err) {
+    toast('Attach failed: ' + (err.message || 'unknown error'), 'error', 4000);
+  }
+}
 
 // ═════════════════════════════════════════════════════════════════════
 // RENDER – JOBS
@@ -1960,10 +2017,12 @@ ${missingKws.length > 0 ? `FINAL REMINDER — before you finish, verify every ke
       }
     }
 
-    // Name for the saved resume: "[Original Name] – [Company] [Title]"
-    const safeCo    = (job.company || 'Company').replace(/[^a-zA-Z0-9 &]/g, '').trim().slice(0, 30);
-    const safeTitle = (job.title   || 'Role')   .replace(/[^a-zA-Z0-9 &]/g, '').trim().slice(0, 30);
-    const suggestedName = `${resume.name} – ${safeCo} ${safeTitle}`;
+    // Name for the saved resume: "FirstName_Resume_Position_Company"
+    const firstName = (activeP.firstName || 'Resume').replace(/[^a-zA-Z0-9]/g, '');
+    const toStudlyCase = s => s.replace(/[^a-zA-Z0-9 ]/g, ' ').trim().split(/\s+/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join('');
+    const positionPart = toStudlyCase(job.title   || 'Role')   .slice(0, 30);
+    const companyPart  = toStudlyCase(job.company || 'Company').slice(0, 25);
+    const suggestedName = `${firstName}_Resume_${positionPart}_${companyPart}`;
 
     // Show preview modal with save + download options
     const escapedText = escHtml(tailored);
@@ -2730,6 +2789,7 @@ function wireEvents() {
     if (action === 'view-resume')         window.viewResume(id);
     if (action === 'download-resume-pdf') window.downloadResumePdf(id);
     if (action === 'download-resume')     window.downloadResume(id);
+    if (action === 'attach-resume')       attachResumeToPage(id);
     if (action === 'analyze-resume')      switchTab('analyze');
     if (action === 'delete-resume')       window.deleteResume(id);
   });
