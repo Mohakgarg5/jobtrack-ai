@@ -48,10 +48,28 @@ async function autoSaveJD(jdData, tab) {
   const alreadySaved = norm && jobs.some(j => normalizeJobUrl(j.url) === norm);
 
   if (alreadySaved) {
-    // Already in library — just show a green badge
     const existing = jobs.find(j => normalizeJobUrl(j.url) === norm);
+    // Update description if the freshly-captured one is longer (first capture may
+    // have fired before LinkedIn finished rendering the job-details panel)
+    const newDescLen = (jdData.description || '').length;
+    const oldDescLen = (existing.text || '').length;
+    if (newDescLen > oldDescLen) {
+      existing.text = jdData.description;
+      if (jdData.title)    existing.title   = jdData.title;
+      if (jdData.company)  existing.company = jdData.company;
+      if (jdData.location) existing.location = jdData.location;
+      await chrome.storage.local.set({ [JT_JOBS_KEY]: jobs });
+      // Invalidate stale analyses that were cached with the old (empty) JD text
+      const analysesStore = await chrome.storage.local.get('jt_analyses');
+      const analyses = analysesStore['jt_analyses'] || {};
+      const staleKeys = Object.keys(analyses).filter(k => k.endsWith('-' + existing.id));
+      if (staleKeys.length) {
+        staleKeys.forEach(k => delete analyses[k]);
+        await chrome.storage.local.set({ jt_analyses: analyses });
+      }
+      safeNotify({ type: 'JD_AUTO_SAVED', jobId: existing.id, job: existing, isNew: false });
+    }
     setBadge(tab.id, '✓', '#059669');
-    safeNotify({ type: 'JD_AUTO_SAVED', jobId: existing.id, isNew: false });
     return;
   }
 

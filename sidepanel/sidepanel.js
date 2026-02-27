@@ -528,7 +528,7 @@ const ROLE_TAXONOMY = {
 const ALL_SKILLS = [
   // Languages
   'python','javascript','typescript','java','go','rust','swift','kotlin','scala',
-  'php','ruby','c++','c#','c','matlab','perl','bash','shell','powershell',
+  'php','ruby','c++','c#','matlab','perl','bash','shell','powershell',
   'sql','html','css','sass','r','dart','elixir','haskell','lua',
   // Frontend
   'react','angular','vue','next.js','nuxt','svelte','redux','mobx','graphql',
@@ -635,6 +635,7 @@ function extractSkillFreq(text) {
   const norm = normalizeText(text);
   const freq = {};
   for (const skill of ALL_SKILLS) {
+    if (skill.length < 2) continue; // skip single-char entries that cause false matches
     const ns      = normalizeText(skill);
     const escaped = ns.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const m       = norm.match(new RegExp('\\b' + escaped + '\\b', 'g'));
@@ -840,8 +841,8 @@ async function callGemini(userMsg, systemMsg, apiKey, model) {
 
 async function callClaude(userMsg, systemMsg, apiKey, model) {
   const body = {
-    model: model || 'claude-haiku-4-5',
-    max_tokens: 4096,
+    model: model || 'claude-haiku-4-5-20251001',
+    max_tokens: 8192,
     messages: [{ role: 'user', content: userMsg }]
   };
   if (systemMsg) body.system = systemMsg;
@@ -863,7 +864,8 @@ async function callClaude(userMsg, systemMsg, apiKey, model) {
   }
 
   const data = await resp.json();
-  return data.content[0].text;
+  // Return text even if truncated — callers decide how to handle
+  return (data.content[0]?.text || '') + (data.stop_reason === 'max_tokens' ? '\n__TRUNCATED__' : '');
 }
 
 async function analyzeResumeVsJD(resume, job) {
@@ -872,8 +874,8 @@ async function analyzeResumeVsJD(resume, job) {
     return { result: state.analyses[cacheKey], cached: true };
   }
 
-  const resumeSnip = resume.text.slice(0, 4000);
-  const jdSnip     = job.text.slice(0, 4000);
+  const resumeSnip = resume.text.slice(0, 8000);
+  const jdSnip     = job.text.slice(0, 8000);
 
   const system = `You are a world-class career coach, senior recruiter, and ATS optimization specialist with 15+ years of experience helping candidates land jobs at top companies.
 Your analysis is deep, specific, and immediately actionable — not generic advice.
@@ -942,8 +944,8 @@ Return this exact JSON — be specific, concrete, and deeply useful:
 }
 
 async function generateCoverLetter(resume, job) {
-  const resumeSnip = resume.text.slice(0, 2500);
-  const jdSnip     = job.text.slice(0, 2000);
+  const resumeSnip = resume.text.slice(0, 6000);
+  const jdSnip     = job.text.slice(0, 6000);
 
   const system = `You are an expert cover letter writer. Write professional,
 concise cover letters (3 short paragraphs, ~250 words) tailored to the specific job.
@@ -964,8 +966,8 @@ Write the cover letter body only (no address headers, no "Dear Hiring Manager" l
 }
 
 async function generateInterviewPrep(resume, job) {
-  const resumeSnip = resume.text.slice(0, 2000);
-  const jdSnip     = job.text.slice(0, 2000);
+  const resumeSnip = resume.text.slice(0, 6000);
+  const jdSnip     = job.text.slice(0, 6000);
 
   const system = `You are an interview coach. Generate targeted interview questions and brief tips.`;
 
@@ -1269,7 +1271,8 @@ function renderResumes() {
       <div class="card-sub">${wordCount(r.text)} words · Added ${fmtDate(r.date)}</div>
       <div class="card-actions">
         <button class="btn-link" data-action="view-resume" data-id="${r.id}">View</button>
-        <button class="btn-link" data-action="download-resume" data-id="${r.id}">Download</button>
+        <button class="btn-link" data-action="download-resume-pdf" data-id="${r.id}">PDF</button>
+        <button class="btn-link" data-action="download-resume" data-id="${r.id}">.txt</button>
         <button class="btn-link green" data-action="analyze-resume">Analyze</button>
         <button class="btn-link danger" data-action="delete-resume" data-id="${r.id}">Delete</button>
       </div>
@@ -1290,19 +1293,31 @@ window.deleteResume = async (id) => {
   toast('Resume deleted');
 };
 
+function triggerTextDownload(text, filename) {
+  // Use chrome.downloads API — the only reliable download method in MV3 extension pages
+  const dataUrl = 'data:text/plain;charset=utf-8,' + encodeURIComponent(text);
+  chrome.downloads.download({ url: dataUrl, filename });
+}
+
 window.downloadResume = (id) => {
   const r = state.resumes.find(x => x.id === id);
   if (!r) return;
-  const blob = new Blob([r.text], { type: 'text/plain;charset=utf-8' });
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement('a');
-  a.href     = url;
-  a.download = r.name.replace(/[^a-zA-Z0-9 _\-–]/g, '').trim() + '.txt';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  const filename = r.name.replace(/[^a-zA-Z0-9 _\-–]/g, '').trim() + '.txt';
+  triggerTextDownload(r.text, filename);
   toast(`Downloaded "${r.name}"`, 'success', 3000);
+};
+
+window.downloadResumePdf = (id) => {
+  const r = state.resumes.find(x => x.id === id);
+  if (!r) return;
+  const activeP = state.profiles.find(x => x.id === state.activeProfileId) || state.profiles[0] || {};
+  const profileLinks = { linkedin: activeP.linkedin, portfolio: activeP.portfolio, github: activeP.github, email: activeP.email };
+  const html = resumeTextToHtml(r.text, r.name, profileLinks);
+  const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+  const url  = URL.createObjectURL(blob);
+  const win  = window.open(url, '_blank');
+  if (!win) toast('Allow popups for this extension to open PDF', 'error', 4000);
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
 };
 
 // ═════════════════════════════════════════════════════════════════════
@@ -1530,6 +1545,215 @@ async function doLocalMatch() {
   }
 }
 
+// ── Resume Text → Print-ready HTML ────────────────────────────────────
+function resumeTextToHtml(text, title, links) {
+  links = links || {};
+  const BLUE = '#2E75B6';
+
+  function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+  function makeLink(href, label) {
+    if (!href) return esc(label);
+    const h = /^https?:\/\//i.test(href) ? href : 'https://' + href;
+    return `<a href="${esc(h)}">${esc(label)}</a>`;
+  }
+
+  function renderContact(line) {
+    return line.split(/\s*\|\s*/).map(p => {
+      const t = p.trim();
+      if (/^linkedin$/i.test(t))  return makeLink(links.linkedin, 'LinkedIn');
+      if (/^portfolio$/i.test(t)) return makeLink(links.portfolio || 'https://www.mohakgarg.com', 'Portfolio');
+      if (/^github$/i.test(t))    return makeLink(links.github, 'GitHub');
+      if (t.includes('@'))        return `<a href="mailto:${esc(t)}">${esc(t)}</a>`;
+      if (/^https?:\/\//i.test(t)) return `<a href="${esc(t)}">${esc(t)}</a>`;
+      return esc(t);
+    }).join(' | ');
+  }
+
+  // Date range pattern (reused in multiple places)
+  const D = `((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\\s+\\d{4}\\s*[–\\-]\\s*(?:(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\\s+)?\\d{4}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\\s+\\d{4}\\s*[–\\-]\\s*Present)`;
+
+  // Extract date from end of line — after spaces OR after last pipe
+  function extractDate(line) {
+    let m = line.match(new RegExp(`^(.*?)\\s+${D}\\s*$`, 'i'));
+    if (m) return { left: m[1].trim(), date: m[2].trim() };
+    m = line.match(new RegExp(`^(.*?)\\s*\\|\\s*${D}\\s*$`, 'i'));
+    if (m) return { left: m[1].trim(), date: m[2].trim() };
+    return null;
+  }
+
+  // Parse an education line that may have all fields pipe-separated:
+  // "University, City | Degree | Month YYYY – Month YYYY | GPA: X"
+  function parseEduLine(line) {
+    const parts = line.split(/\s*\|\s*/);
+    let institution = '', degParts = [], date = '', gpa = '';
+    const dateRe = new RegExp(`^${D}$`, 'i');
+    parts.forEach((p, idx) => {
+      if (dateRe.test(p.trim())) { date = p.trim(); return; }
+      if (/^gpa/i.test(p.trim()))  { gpa = p.trim(); return; }
+      if (idx === 0) institution = p.trim();
+      else degParts.push(p.trim());
+    });
+    // Remove any GPA that ended up in degParts
+    const degStr = degParts.filter(d => !/^gpa/i.test(d)).join(' | ');
+    const gpaFinal = gpa || degParts.find(d => /^gpa/i.test(d)) || '';
+    return { institution, degree: degStr, date, gpa: gpaFinal };
+  }
+
+  const lines = text.split('\n').map(l => l.trim());
+  let body = '';
+  let section = '';
+  let prevType = 'heading';
+  let i = 0;
+  while (i < lines.length && !lines[i]) i++;
+
+  // ── Header: Name + Contact ──────────────────────────────────────────
+  if (i < lines.length) {
+    const first = lines[i];
+    if (first.includes('|')) {
+      // "NAME | phone | email | ..." all on one line
+      const pipeIdx = first.indexOf('|');
+      const namePart = first.slice(0, pipeIdx).trim();
+      const rest = first.slice(pipeIdx + 1).trim();
+      if (namePart && !namePart.includes('@') && !/\+?\d[\d\s\-()]{5,}/.test(namePart)) {
+        body += `<div class="name">${esc(namePart)}</div>`;
+        body += `<div class="contact">${renderContact(rest)}</div>`;
+      } else {
+        body += `<div class="contact">${renderContact(first)}</div>`;
+      }
+    } else {
+      body += `<div class="name">${esc(first)}</div>`;
+      i++;
+      while (i < lines.length && !lines[i]) i++;
+      if (i < lines.length && (lines[i].includes('|') || lines[i].includes('@') || /\+?\d[\d\s\-()]{5,}/.test(lines[i]))) {
+        body += `<div class="contact">${renderContact(lines[i])}</div>`;
+      }
+    }
+    i++;
+  }
+
+  // ── Body ────────────────────────────────────────────────────────────
+  for (; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line) continue;
+
+    // Section heading: ALL CAPS, no digits, no pipe, no bullet
+    if (/^[A-Z][A-Z\s&\/\-]{2,}$/.test(line) && !/\d/.test(line) && !line.includes('|') && !/^[•\-\*]/.test(line)) {
+      section = line.trim();
+      prevType = 'heading';
+      body += `<div class="sh">${esc(line)}</div>`;
+      continue;
+    }
+
+    // Bullet
+    if (/^[•\-\*]\s/.test(line)) {
+      prevType = 'bullet';
+      body += `<div class="bul">${esc(line.replace(/^[•\-\*]\s*/, ''))}</div>`;
+      continue;
+    }
+
+    // ── EDUCATION section: handle all formats ──
+    if (section === 'EDUCATION') {
+      // Does the line contain a date anywhere?
+      const hasDate = new RegExp(D, 'i').test(line);
+      if (hasDate || (line.includes('|') && /university|institute|college|school/i.test(line))) {
+        const edu = parseEduLine(line);
+        if (edu.institution) {
+          prevType = 'entry';
+          body += `<div class="er"><span>${esc(edu.institution)}</span><span class="dt">${esc(edu.date)}</span></div>`;
+          const degLine = [edu.degree, edu.gpa].filter(Boolean).join(' | ');
+          if (degLine) body += `<div class="deg">${esc(degLine)}</div>`;
+          continue;
+        }
+      }
+      // Standalone degree/GPA line
+      if (/master|bachelor|phd|doctor|gpa|technology|engineering|science|arts/i.test(line)) {
+        prevType = 'degree';
+        body += `<div class="deg">${esc(line)}</div>`;
+        continue;
+      }
+    }
+
+    // Skill category: "Label: items" — label ≤ 45 chars, no sentence punctuation
+    const ci = line.indexOf(':');
+    if (ci > 0 && ci <= 45 && !/[.,!?]/.test(line.slice(0, ci)) && !line.slice(0, ci).includes('|') && line.slice(ci + 1).trim()) {
+      prevType = 'skill';
+      body += `<div class="sk"><strong>${esc(line.slice(0, ci))}:</strong> ${esc(line.slice(ci + 1).trim())}</div>`;
+      continue;
+    }
+
+    // Entry header: line with date at end (job roles, edu fallback)
+    const dated = extractDate(line);
+    if (dated) {
+      prevType = 'entry';
+      body += `<div class="er"><span>${esc(dated.left)}</span><span class="dt">${esc(dated.date)}</span></div>`;
+      continue;
+    }
+
+    // PROJECTS: title only on first line after heading or after bullets; rest are paragraphs
+    if (/PROJECT/i.test(section)) {
+      if (prevType === 'heading' || prevType === 'bullet') {
+        prevType = 'project-title';
+        body += `<div class="pn">${esc(line)}</div>`;
+      } else {
+        prevType = 'para';
+        body += `<div class="pa">${esc(line)}</div>`;
+      }
+      continue;
+    }
+
+    prevType = 'para';
+    body += `<div class="pa">${esc(line)}</div>`;
+  }
+
+  return `<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>${esc(title)}</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:Calibri,Arial,sans-serif;font-size:9.5pt;color:#000;background:#fff;padding:.4in .5in;width:8.5in}
+a{color:#1155CC;text-decoration:underline}
+.name{text-align:center;font-size:14pt;font-weight:700;letter-spacing:0.5px;margin-bottom:4px}
+.contact{text-align:center;font-size:9pt;margin-bottom:8px}
+.sh{color:${BLUE};font-weight:700;font-size:10pt;border-bottom:1.5px solid ${BLUE};margin-top:10px;margin-bottom:4px;padding-bottom:1px}
+.er{display:flex;justify-content:space-between;align-items:baseline;font-weight:700;font-size:9.5pt;margin-top:6px;margin-bottom:2px}
+.er span:first-child{flex:1;margin-right:8px}
+.dt{font-weight:400;font-style:italic;font-size:9pt;white-space:nowrap}
+.deg{font-style:italic;font-size:9pt;margin-bottom:2px;margin-top:2px}
+.bul{font-size:9pt;line-height:1.42;margin-bottom:2px;padding-left:14px;text-indent:-9px;text-align:justify}
+.bul::before{content:"• "}
+.sk{font-size:9pt;line-height:1.42;margin-bottom:3px;text-align:justify}
+.pn{font-weight:700;font-size:9.5pt;margin-top:6px;margin-bottom:2px}
+.pa{font-size:9pt;line-height:1.42;margin-bottom:2px;text-align:justify}
+@media print{@page{size:letter;margin:0}body{padding:.4in .5in;width:8.5in}}
+</style>
+<script>
+window.addEventListener('load',function(){
+  var body=document.body;
+  var max=800; // aggressive target — ensures single page even after reflow differences
+  // Pass 1: apply zoom based on initial scrollHeight
+  var h=body.scrollHeight;
+  if(h>max) body.style.zoom=(max/h).toFixed(4);
+  // Pass 2: after reflow, check again — if still over, also reduce font size
+  setTimeout(function(){
+    var h2=body.scrollHeight;
+    if(h2>max){
+      // Zoom alone didn't fully work — reduce base font size as second lever
+      var ratio=max/h2;
+      var fs=parseFloat(window.getComputedStyle(body).fontSize)||12.67;
+      body.style.fontSize=(fs*ratio).toFixed(2)+'px';
+    }
+    // Pass 3: final check, then print
+    setTimeout(function(){
+      var h3=body.scrollHeight;
+      if(h3>max) body.style.zoom=((parseFloat(body.style.zoom)||1)*(max/h3)).toFixed(4);
+      setTimeout(window.print,400);
+    },150);
+  },200);
+});
+<\/script>
+</head><body>${body}</body></html>`;
+}
+
 // ── Tailor Resume ─────────────────────────────────────────────────────
 async function tailorResumeForJob(resume, job) {
   const btn = document.getElementById('btnTailorResume');
@@ -1545,66 +1769,195 @@ async function tailorResumeForJob(resume, job) {
       return;
     }
 
-    const systemMsg = `You are a world-class resume writer and ATS optimization specialist with 15+ years of experience placing candidates at Fortune 500 companies, FAANG, and top startups. Your goal is to make this resume the #1 ATS match for the given job description while keeping 100% of the candidate's authentic experience intact.
+    // Normalize PDF-extracted text: collapse multiple spaces, fix line breaks
+    const cleanResumeText = resume.text
+      .replace(/\r\n/g, '\n')
+      .replace(/[ \t]{2,}/g, ' ')   // collapse runs of spaces/tabs to single space
+      .replace(/\n{3,}/g, '\n\n')   // max one blank line between sections
+      .trim();
 
-═══════════════════════════════════════════
-ABSOLUTE PRESERVATION RULES (NEVER BREAK)
-═══════════════════════════════════════════
-1. PRESERVE STRUCTURE EXACTLY — Keep every section heading (e.g. "Experience", "Education", "Skills", "Projects") exactly as they appear. Do not add, remove, rename, merge, or reorder sections.
-2. PRESERVE ALL JOBS & COMPANIES — Every company name, job title, employment date, and location must remain 100% identical character-for-character.
-3. PRESERVE ALL EDUCATION — Institution names, degrees, majors, graduation years, and GPA (if shown) must not change by even one character.
-4. PRESERVE ALL METRICS — If the resume says "increased revenue by 40%", keep it as "increased revenue by 40%". Never invent or alter numbers.
-5. PRESERVE CONTACT INFO — Name, email, phone, LinkedIn, GitHub, portfolio links — leave completely untouched.
-6. PRESERVE BULLET COUNT — Do not remove any existing bullet points. You may reword them but every bullet must remain present.
-7. NEVER FABRICATE — Do not add any skill, technology, tool, framework, certification, project, company, or achievement the candidate has not already mentioned.
+    // Detect role type BEFORE building systemMsg (used inside the template)
+    const jdRole = detectRole((job.title || '') + ' ' + job.text.slice(0, 400));
+    const isPmRole = jdRole.role === 'product_manager' || jdRole.role === 'program_manager';
 
-═══════════════════════════════════════════
-ATS OPTIMIZATION ACTIONS (APPLY AGGRESSIVELY)
-═══════════════════════════════════════════
-A. KEYWORD INJECTION — Identify the top 15-20 keywords and exact phrases from the job description. Weave them naturally into existing bullet points and the summary where the candidate's experience genuinely supports it. Prioritize exact matches (e.g., if JD says "cross-functional collaboration", use that exact phrase if you can).
-B. PROFESSIONAL SUMMARY — Completely rewrite the summary/objective section (if present) to mirror the JD's language, priorities, and tone. Highlight the candidate's most relevant experience for this specific role. If no summary exists, do NOT add one.
-C. SKILLS SECTION — Reorder existing skills to put JD-matching skills first. If the candidate has a skill that appears in the JD under a slightly different name (e.g., candidate says "Postgres", JD says "PostgreSQL"), standardize to match the JD's terminology.
-D. ACTION VERBS — Upgrade weak verbs in bullet points to stronger ones aligned with JD language (e.g., "worked on" → "engineered", "helped with" → "led"). Keep the factual content identical.
-E. QUANTIFY WHERE POSSIBLE — If an existing bullet implies scale or impact but lacks numbers, you may add approximate qualifiers like "multiple", "cross-team", "large-scale" — but NEVER invent specific metrics that aren't implied.
-F. RELEVANT BULLETS FIRST — Within each job's bullet list, reorder bullets so the most JD-relevant ones appear first. Do not add or remove bullets.
+    const systemMsg = `You are an expert resume writer specializing in ATS optimization. Tailor the given resume to match the job description as closely as possible.
 
-═══════════════════════════════════════════
-OUTPUT FORMAT
-═══════════════════════════════════════════
-- Output ONLY the complete tailored resume text.
-- Maintain the exact same formatting style (plain text, spacing, bullet style) as the original.
-- No markdown fences, no code blocks, no explanations, no commentary before or after the resume.
-- The output must be ready to save and submit directly.`;
+REQUIRED OUTPUT FORMAT — follow this exactly:
 
-    const userMsg = `CANDIDATE NAME: ${candidateName}
-TARGET JOB TITLE: ${job.title || '(see JD)'}
-TARGET COMPANY: ${job.company || '(see JD)'}
+Line 1: Full name only (e.g. MOHAK GARG)
+Line 2: phone | email | LinkedIn | Portfolio
 
-═══════════════════════════════════════════
-ORIGINAL RESUME (DO NOT LOSE ANY OF THIS)
-═══════════════════════════════════════════
-${resume.text}
+SECTION HEADING
 
-═══════════════════════════════════════════
-JOB DESCRIPTION (OPTIMIZE THE RESUME FOR THIS)
-═══════════════════════════════════════════
-${job.text.slice(0, 5000)}
+For Work Experience jobs:
+Job Title | Company Name | City, Country | Month YYYY – Month YYYY
+• bullet point
+• bullet point
 
-Now produce the fully ATS-optimized tailored resume. Follow ALL preservation rules strictly — this resume will be submitted directly, so accuracy of existing facts is critical. Maximize keyword density from the JD without fabricating anything.`;
+For Education entries:
+University Name, City, State | Month YYYY – Month YYYY
+Degree | GPA: X.X/Y.Y
+
+For Skills:
+Category: skill1 | skill2 | skill3
+
+For Projects:
+Project Name
+• bullet point describing what was done
+• bullet point describing results
+
+STRICT RULES — never break these:
+- ONE PAGE ONLY — HARD LIMIT: The entire resume MUST fit on one printed page. Never overflow onto page 2. When in doubt, CUT content — shorter is better than two pages.
+- WORD COUNT: Target 540–580 words total. Count every word including skills. Do NOT exceed 580 words under any circumstances.
+- SECTION SIZE LIMITS (strictly enforce):
+  • Professional Summary: EXACTLY 3 lines — no more
+  • Work Experience: most recent role = 6 bullets; older roles = 3–4 bullets
+  • Skills: keep ONLY the exact same category names as the original — do NOT add new categories. Up to 2 lines per category.
+  • Projects: 3 bullets per project
+  • Education: keep as-is
+- Keep EVERY section that exists in the original (do not remove any section)
+- Keep every company name, date range, location, school, degree, GPA exactly as given
+- Keep contact info (name, email, phone, links) completely untouched
+- Never invent or change any number, metric, or percentage
+- Never fabricate a new work experience bullet, company, or project not in the original
+- Add missing JD keywords ONLY inside existing Skills categories — do not create new categories
+- All project descriptions must use • bullet points (never plain paragraphs)
+- No markdown, no code fences, no commentary before or after the resume
+
+PROFESSIONAL SUMMARY RULES (critical — read carefully):
+- The summary describes who the CANDIDATE IS based on their actual experience — NEVER describe them as an Intern even if the target role is an internship
+- NEVER write phrases like "seeking [role] roles" or "looking for" — describe their experience and value, not their job search
+- If the target job title contains "Intern", write the summary as if applying as an experienced professional: "Product Manager with 3 years..." NOT "Product Management Intern with..."
+- 3 lines max. Mirror JD language. Start with the candidate's strongest relevant identity.
+
+JOB TITLE NORMALIZATION (apply to Work Experience titles only):
+- Look at the TARGET ROLE. Map every Work Experience title to the closest standard title in that domain.
+- TARGET ROLE MAPPING RULES:
+  • If target role is Product Management (even Intern) → use "Product Manager" in Work Experience (not Intern)
+  • If target role is Program Management → use "Program Manager"
+  • If target role is Project Management → use "Project Manager"
+  • If target role is Software / Engineering → keep engineering titles as-is
+- NEVER add Intern, Trainee, Associate, or Junior to Work Experience titles unless that exact word is in the ORIGINAL title for that role
+- Never invent seniority (do not add Senior/Lead/Director if not in the original)
+- Keep company name, dates, location on the same line — only the title word(s) change
+
+WHAT TO IMPROVE:
+- PRIORITY 1: Inject every keyword from the MISSING KEYWORDS list — weave into existing bullets where natural; otherwise add to Skills section
+- Weave additional keywords from the JD naturally into existing bullets
+- Rewrite the Professional Summary to mirror the JD's language — 3 lines, candidate-as-experienced-professional
+- Reorder skills to put JD-matching ones first
+- Upgrade weak action verbs while keeping all facts identical
+- Within each role, reorder bullets so most JD-relevant appear first
+
+` + (isPmRole ? `
+BULLET POINT STRUCTURE — PM ROLES — MANDATORY:
+
+EVERY Work Experience bullet MUST make THREE things painfully obvious to the reader:
+  1. PROBLEM — what user/business problem existed (state it explicitly, don't hint at it)
+  2. PRODUCT DECISION — the specific product or process decision YOU made
+  3. MEASURABLE OUTCOME — a concrete number, %, time saved, or strong qualifier
+
+STRUCTURE: Write as ONE sentence using this spine:
+  "[Discovered/Found/Noticed] [explicit problem with data/context]; [product decision you took], [measurable outcome]"
+
+Use a semicolon ";" to cleanly separate the problem from the action. No em dash "—".
+Max 180 characters per bullet. Never invent numbers.
+
+ABSOLUTELY FORBIDDEN opening verbs (they hide the problem):
+  Launched, Built, Created, Developed, Led, Managed, Tracked, Established, Implemented,
+  Delivered, Translated, Improved, Increased, Worked, Utilized, Leveraged, Facilitated
+
+APPROVED problem-surfacing openers:
+  Identified that..., Discovered that..., Found that..., Noticed that..., Recognized that...,
+  Diagnosed..., Observed that..., Uncovered that..., Detected that...
+
+TRANSFORMATION EXAMPLES — showing explicit vs implicit:
+
+✗ IMPLICIT: "Improved sprint delivery from 65% to 85% completion rate"
+✓ EXPLICIT: "Identified that 35% of sprint stories had no acceptance criteria, causing team to miss 65% completion; restructured grooming with 8-person team to add DoD for every story, recovering delivery to 85%"
+
+✗ IMPLICIT: "Replaced manual workflows with self-serve submissions platform for 50+ users"
+✓ EXPLICIT: "Discovered clients spent 20+ hrs/week on manual data entry with no self-serve option; designed and shipped submissions platform for 50+ users across 5 departments, eliminating the overhead entirely"
+
+✗ IMPLICIT: "Surfaced feature adoption gaps via Tableau dashboards, raising satisfaction 25%"
+✓ EXPLICIT: "Found that 60% of premium features had <10% adoption due to poor discoverability; built Tableau and Mixpanel dashboards to surface gaps, driving prioritization changes that raised satisfaction 25%"
+
+✗ IMPLICIT: "Unblocked roadmap clarity for 40+ user stories by introducing value-complexity scoring"
+✓ EXPLICIT: "Noticed roadmap had 40+ unranked stories causing stakeholder misalignment on priorities; introduced value-complexity scoring framework, cutting planning debates by 30% and achieving consensus in 2 sessions"` : `
+BULLET POINT STRUCTURE (Work Experience):
+- Start each bullet with a strong action verb (e.g. Built, Designed, Reduced, Automated, Delivered)
+- Format: [Action verb] + [what you built/did] + [measurable result]
+- Include a metric or qualifier in every bullet where the original has one
+- Max 160 chars per bullet. One sentence, no sub-bullets`);
+
+    // Compute missing keywords so the AI knows exactly what to inject
+    const localMatch = getLocalMatch(cleanResumeText, job.text);
+    const missingKws = localMatch.missing
+      .map(k => k.replace(/\s*✦$/, '').trim())  // strip preferred marker
+      .filter(Boolean);
+
+    const missingSection = missingKws.length > 0
+      ? `\n⚠️ CRITICAL — MISSING KEYWORDS (every single one MUST appear verbatim in your output) ⚠️\nSearch the JD for these terms and embed each one naturally into a bullet or Skill line. If no bullet fits, add it to Skills. Do NOT skip any:\n${missingKws.map(k => `• ${k}`).join('\n')}\n`
+      : '';
+
+    const userMsg = `Candidate: ${candidateName}
+Role: ${job.title || ''} at ${job.company || ''}
+${missingSection}
+--- RESUME ---
+${cleanResumeText}
+
+--- JOB DESCRIPTION ---
+${job.text.slice(0, 12000)}
+
+${missingKws.length > 0 ? `FINAL REMINDER — before you finish, verify every keyword below appears in your output (exact phrase):\n${missingKws.map(k => `  ✓ ${k}`).join('\n')}` : ''}`;
 
     let tailored = await callAI(userMsg, systemMsg);
 
     // ── Post-process AI output ─────────────────────────────────────────
-    // 1. Strip markdown code fences if the model wrapped the output
+    // 1. Check if model hit output token limit
+    const wasTruncated = tailored.endsWith('\n__TRUNCATED__');
+    if (wasTruncated) tailored = tailored.slice(0, -'\n__TRUNCATED__'.length);
+
+    // 2. Strip markdown code fences if the model wrapped the output
     tailored = tailored.replace(/^```[\w]*\n?/m, '').replace(/\n?```\s*$/m, '').trim();
 
-    // 2. Strip common preamble lines ("Here is your tailored resume:", etc.)
+    // 3. Strip common preamble lines ("Here is your tailored resume:", etc.)
     const preambleRe = /^(here is|here's|below is|sure[,!]?|certainly[,!]?|of course[,!]?|i've tailored|i have tailored|tailored resume:|your tailored resume[:\-]?)[^\n]*\n/i;
     tailored = tailored.replace(preambleRe, '').trim();
 
-    // 3. Guard against empty or severely truncated output
-    if (!tailored || tailored.length < resume.text.length * 0.4) {
-      throw new Error('AI returned an incomplete resume. Try again or switch to a model with higher output limits.');
+    // 4. Hard fail only if basically nothing came back
+    if (!tailored || tailored.length < 100) {
+      throw new Error('AI returned an empty response. Check your API key and try again.');
+    }
+
+    // 5. Force-inject any JD keywords still absent from the tailored resume into Skills section.
+    //    Catches two cases: (a) AI failed to inject originally-missing keywords,
+    //    (b) AI accidentally dropped keywords that existed in the original resume.
+    {
+      const postMatch = getLocalMatch(tailored, job.text);
+      const stillMissing = postMatch.missing
+        .map(k => k.replace(/\s*✦$/, '').trim())
+        .filter(Boolean);
+
+      if (stillMissing.length > 0) {
+        const tLines = tailored.split('\n');
+        // Find all skill lines (format: "Category: items") and pick the shortest to append to
+        const skillLineIdxs = [];
+        for (let li = 0; li < tLines.length; li++) {
+          const ci = tLines[li].indexOf(':');
+          if (ci > 0 && ci <= 45 && !/[.,!?]/.test(tLines[li].slice(0, ci))
+              && !tLines[li].slice(0, ci).includes('|') && tLines[li].slice(ci + 1).trim()) {
+            skillLineIdxs.push(li);
+          }
+        }
+        if (skillLineIdxs.length > 0) {
+          // Prefer the shortest skill line to keep line lengths balanced
+          const targetIdx = skillLineIdxs.reduce((best, li) =>
+            tLines[li].length < tLines[best].length ? li : best, skillLineIdxs[0]);
+          tLines[targetIdx] += ' | ' + stillMissing.join(' | ');
+          tailored = tLines.join('\n');
+        }
+      }
     }
 
     // Name for the saved resume: "[Original Name] – [Company] [Title]"
@@ -1615,6 +1968,7 @@ Now produce the fully ATS-optimized tailored resume. Follow ALL preservation rul
     // Show preview modal with save + download options
     const escapedText = escHtml(tailored);
     showHtmlModal('✨ Tailored Resume Preview', `
+      ${wasTruncated ? `<div style="margin-bottom:10px;padding:8px 10px;background:#fff3cd;border:1px solid #ffc107;border-radius:6px;font-size:12px;color:#856404">⚠️ The model hit its output limit — resume may be cut off. Consider switching to <strong>Claude Sonnet 4.6</strong> for longer resumes.</div>` : ''}
       <div style="margin-bottom:10px;font-size:12px;color:#6b7280">
         Review the tailored version below. Keywords were injected and bullets were strengthened — all your facts, companies, and dates are preserved exactly.
       </div>
@@ -1624,9 +1978,10 @@ Now produce the fully ATS-optimized tailored resume. Follow ALL preservation rul
       </div>
       <div id="tailoredResumePreview" style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:12px;max-height:280px;overflow-y:auto;white-space:pre-wrap;font-size:11px;font-family:monospace;line-height:1.5">${escapedText}</div>
       <div style="display:flex;gap:8px;margin-top:12px">
-        <button class="btn-primary" onclick="window.saveTailoredResume()" style="flex:1">💾 Save to Library</button>
-        <button class="btn-ghost" onclick="window.downloadTailoredResume()" style="flex:1">📥 Download .txt</button>
-        <button class="btn-ghost" onclick="closeModal()" style="flex:1">Discard</button>
+        <button class="btn-primary" data-action="save-tailored-resume" style="flex:1">💾 Save</button>
+        <button class="btn-primary" data-action="download-tailored-pdf" style="flex:1">📄 Download PDF</button>
+        <button class="btn-ghost" data-action="download-tailored-resume" style="flex:1">📥 .txt</button>
+        <button class="btn-ghost" data-action="close-modal-btn" style="flex:1">Discard</button>
       </div>
     `);
 
@@ -1643,16 +1998,20 @@ Now produce the fully ATS-optimized tailored resume. Follow ALL preservation rul
 
     window.downloadTailoredResume = () => {
       const name = (document.getElementById('tailoredResumeName') || {}).value?.trim() || suggestedName;
-      const blob = new Blob([tailored], { type: 'text/plain;charset=utf-8' });
-      const url  = URL.createObjectURL(blob);
-      const a    = document.createElement('a');
-      a.href     = url;
-      a.download = name.replace(/[^a-zA-Z0-9 _\-–]/g, '').trim() + '.txt';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      const filename = name.replace(/[^a-zA-Z0-9 _\-–]/g, '').trim() + '.txt';
+      triggerTextDownload(tailored, filename);
       toast('Resume downloaded!', 'success', 3000);
+    };
+
+    window.downloadTailoredPdf = () => {
+      const name = (document.getElementById('tailoredResumeName') || {}).value?.trim() || suggestedName;
+      const profileLinks = { linkedin: activeP.linkedin, portfolio: activeP.portfolio, github: activeP.github, email: activeP.email };
+      const html = resumeTextToHtml(tailored, name, profileLinks);
+      const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+      const url  = URL.createObjectURL(blob);
+      const win  = window.open(url, '_blank');
+      if (!win) { toast('Allow popups for this extension to download PDF', 'error', 4000); }
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
     };
 
   } catch (err) {
@@ -2101,7 +2460,7 @@ function updateProviderHint(provider) {
     [...modelSel.options].forEach(o => {
       o.hidden = !o.value.startsWith('claude');
     });
-    if (!modelSel.value.startsWith('claude')) modelSel.value = 'claude-haiku-4-5';
+    if (!modelSel.value.startsWith('claude')) modelSel.value = 'claude-haiku-4-5-20251001';
   }
 }
 
@@ -2368,10 +2727,11 @@ function wireEvents() {
     if (!btn) return;
     const action = btn.dataset.action;
     const id = btn.dataset.id;
-    if (action === 'view-resume')     window.viewResume(id);
-    if (action === 'download-resume') window.downloadResume(id);
-    if (action === 'analyze-resume')  switchTab('analyze');
-    if (action === 'delete-resume')   window.deleteResume(id);
+    if (action === 'view-resume')         window.viewResume(id);
+    if (action === 'download-resume-pdf') window.downloadResumePdf(id);
+    if (action === 'download-resume')     window.downloadResume(id);
+    if (action === 'analyze-resume')      switchTab('analyze');
+    if (action === 'delete-resume')       window.deleteResume(id);
   });
 
   // Jobs list
@@ -2416,6 +2776,15 @@ function wireEvents() {
 
     const closeBtn = e.target.closest('[data-action="close-modal-btn"]');
     if (closeBtn) closeModal();
+
+    const saveTailored = e.target.closest('[data-action="save-tailored-resume"]');
+    if (saveTailored) window.saveTailoredResume?.();
+
+    const dlTailored = e.target.closest('[data-action="download-tailored-resume"]');
+    if (dlTailored) window.downloadTailoredResume?.();
+
+    const dlPdf = e.target.closest('[data-action="download-tailored-pdf"]');
+    if (dlPdf) window.downloadTailoredPdf?.();
   });
 
   // ── Listen for messages from popup / background ───────────────────
@@ -2548,6 +2917,20 @@ async function saveJob(data) {
     const norm = normalizeJobUrl(data.url);
     const existing = state.jobs.find(j => j.url && normalizeJobUrl(j.url) === norm);
     if (existing) {
+      // Update stored text if the new capture is longer (e.g. first capture was empty)
+      if (data.text && data.text.length > (existing.text || '').length) {
+        existing.text = data.text;
+        if (data.title)    existing.title    = data.title;
+        if (data.company)  existing.company  = data.company;
+        if (data.location) existing.location = data.location;
+        await save(SK.JOBS, state.jobs);
+        // Invalidate stale analyses cached against the old (empty) JD text
+        const staleKeys = Object.keys(state.analyses).filter(k => k.endsWith('-' + existing.id));
+        if (staleKeys.length) {
+          staleKeys.forEach(k => delete state.analyses[k]);
+          await save(SK.ANALYSES, state.analyses);
+        }
+      }
       toast('Already in your library', '', 2500);
       return existing;
     }

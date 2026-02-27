@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "description": "AI-powered job tracker: scan resumes vs JDs, get match scores, keyword gaps, improvements, cover letters & interview prep.",
 
-  "permissions": ["storage", "activeTab", "tabs", "sidePanel", "scripting", "unlimitedStorage", "webNavigation"],
+  "permissions": ["storage", "activeTab", "tabs", "sidePanel", "scripting", "unlimitedStorage", "webNavigation", "downloads"],
   "host_permissions": [
     "https://api.anthropic.com/*",
     "https://generativelanguage.googleapis.com/*",
