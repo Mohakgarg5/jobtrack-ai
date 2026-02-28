@@ -20,6 +20,7 @@ const SK = {
 // ── App State ─────────────────────────────────────────────────────────
 const state = {
   resumes: [],
+  coverLetters: [],
   jobs: [],
   applications: [],
   analyses: {},
@@ -95,12 +96,26 @@ function activeApps() {
 }
 
 // Saves current profile's resumes back into the profiles array and persists it.
-// Call this wherever you previously called save(SK.RESUMES, state.resumes).
 async function saveResumes() {
   const p = state.profiles.find(x => x.id === state.activeProfileId) || state.profiles[0];
   if (!p) return;
   p.resumes = state.resumes;
   await save(SK.PROFILES, state.profiles);
+}
+
+async function saveCoverLetters() {
+  const p = state.profiles.find(x => x.id === state.activeProfileId) || state.profiles[0];
+  if (!p) return;
+  p.coverLetters = state.coverLetters;
+  await save(SK.PROFILES, state.profiles);
+}
+
+async function saveCoverLetter(name, text) {
+  const cl = { id: uid(), name, text, date: new Date().toISOString() };
+  state.coverLetters.unshift(cl);
+  await saveCoverLetters();
+  renderCoverLetters();
+  toast(`✓ Cover letter "${name}" saved`, 'success');
 }
 
 // ── Profile helpers ───────────────────────────────────────────────────
@@ -128,8 +143,9 @@ function syncActiveProfileToState() {
     weakness:     p.weakness     || '',
     coverLetter:  p.coverLetter  || ''
   };
-  // Each profile has its own resume list
-  state.resumes = p.resumes || [];
+  // Each profile has its own resume and cover letter lists
+  state.resumes      = p.resumes      || [];
+  state.coverLetters = p.coverLetters || [];
   // Keep legacy keys in sync so content script autofill still works
   chrome.storage.local.set({
     [SK.PROFILE]:     state.profile,
@@ -1274,11 +1290,15 @@ function renderResumes() {
         <button class="btn-link" data-action="download-resume-pdf" data-id="${r.id}">PDF</button>
         <button class="btn-link" data-action="download-resume" data-id="${r.id}">.txt</button>
         <button class="btn-link" data-action="attach-resume" data-id="${r.id}" title="Inject this resume into the file upload field on the active job page">📎 Attach</button>
+        <button class="btn-link" data-action="duplicate-resume" data-id="${r.id}">Duplicate</button>
+        <button class="btn-link" data-action="rename-resume" data-id="${r.id}">Rename</button>
         <button class="btn-link green" data-action="analyze-resume">Analyze</button>
         <button class="btn-link danger" data-action="delete-resume" data-id="${r.id}">Delete</button>
       </div>
     </div>
   `).join('');
+
+  renderCoverLetters();
 }
 
 window.viewResume = (id) => {
@@ -1293,6 +1313,84 @@ window.deleteResume = async (id) => {
   renderResumes();
   toast('Resume deleted');
 };
+
+window.duplicateResume = async (id) => {
+  const r = state.resumes.find(x => x.id === id);
+  if (!r) return;
+  const copy = { id: uid(), name: `Copy of ${r.name}`, text: r.text, date: new Date().toISOString() };
+  const idx = state.resumes.indexOf(r);
+  state.resumes.splice(idx + 1, 0, copy);
+  await saveResumes();
+  renderResumes();
+  toast(`Duplicated "${r.name}"`, 'success');
+};
+
+function renameResumeInline(btn, id) {
+  const card = btn.closest('.item-card');
+  const titleEl = card.querySelector('.card-title');
+  if (titleEl.querySelector('input')) return; // already editing
+  const currentName = titleEl.textContent;
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = currentName;
+  input.style.cssText = 'width:100%;font-size:inherit;font-weight:600;border:1px solid var(--accent);border-radius:4px;padding:2px 6px;background:var(--bg-2);color:var(--text-1);outline:none;box-sizing:border-box;';
+
+  titleEl.textContent = '';
+  titleEl.appendChild(input);
+  input.focus();
+  input.select();
+
+  let committed = false;
+  async function commit() {
+    if (committed) return;
+    committed = true;
+    const newName = input.value.trim();
+    if (!newName || newName === currentName) {
+      titleEl.textContent = currentName;
+      return;
+    }
+    const r = state.resumes.find(x => x.id === id);
+    if (!r) return;
+    r.name = newName;
+    await saveResumes();
+    renderResumes();
+    toast(`Renamed to "${newName}"`, 'success');
+  }
+
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); commit(); }
+    if (e.key === 'Escape') { committed = true; titleEl.textContent = currentName; }
+  });
+  input.addEventListener('blur', commit);
+}
+
+// ═════════════════════════════════════════════════════════════════════
+// RENDER – COVER LETTERS
+// ═════════════════════════════════════════════════════════════════════
+
+function renderCoverLetters() {
+  const listEl = document.getElementById('coverLetterList');
+  if (!listEl) return;
+
+  if (state.coverLetters.length === 0) {
+    listEl.innerHTML = `<div style="font-size:12px;color:#9ca3af;text-align:center;padding:12px 0">No cover letters saved yet.<br><small>Tailor a resume to auto-generate one.</small></div>`;
+    return;
+  }
+
+  listEl.innerHTML = state.coverLetters.map(cl => `
+    <div class="item-card">
+      <div class="card-title">${escHtml(cl.name)}</div>
+      <div class="card-sub">Added ${fmtDate(cl.date)}</div>
+      <div class="card-actions">
+        <button class="btn-link" data-action="view-cl" data-id="${cl.id}">View</button>
+        <button class="btn-link" data-action="copy-cl" data-id="${cl.id}">Copy</button>
+        <button class="btn-link" data-action="download-cl" data-id="${cl.id}">.txt</button>
+        <button class="btn-link danger" data-action="delete-cl" data-id="${cl.id}">Delete</button>
+      </div>
+    </div>
+  `).join('');
+}
 
 function triggerTextDownload(text, filename) {
   // Use chrome.downloads API — the only reliable download method in MV3 extension pages
@@ -1790,11 +1888,11 @@ async function doLocalMatch() {
   const content = document.getElementById('localMatchContent');
   section.classList.remove('hidden');
 
-  const showTailorBtn = match.score < 80 && state.settings.apiKey;
+  const showTailorBtn = !!state.settings.apiKey;
   const tailorHtml = showTailorBtn ? `
     <div style="margin-top:12px;padding:10px 12px;background:#faf5ff;border:1px solid #e9d5ff;border-radius:8px;display:flex;align-items:center;justify-content:space-between;gap:8px">
       <div>
-        <div class="text-sm text-bold" style="color:#7c3aed">Match below 80%</div>
+        <div class="text-sm text-bold" style="color:#7c3aed">${match.score < 80 ? 'Match below 80%' : 'Further optimize this resume'}</div>
         <div style="font-size:11px;color:#6b7280">AI can tailor your resume to better fit this JD</div>
       </div>
       <button class="btn-sm btn-primary" id="btnTailorResume" style="background:#7c3aed;white-space:nowrap;flex-shrink:0">✨ Tailor Resume</button>
@@ -1997,46 +2095,24 @@ function resumeTextToHtml(text, title, links) {
 <html><head><meta charset="UTF-8"><title>${esc(title)}</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:Calibri,Arial,sans-serif;font-size:9.5pt;color:#000;background:#fff;padding:.4in .5in;width:8.5in}
+body{font-family:Calibri,Arial,sans-serif;font-size:9.5pt;color:#000;background:#fff;padding:.35in .5in;width:8.5in}
 a{color:#1155CC;text-decoration:underline}
 .name{text-align:center;font-size:14pt;font-weight:700;letter-spacing:0.5px;margin-bottom:4px}
-.contact{text-align:center;font-size:9pt;margin-bottom:8px}
-.sh{color:${BLUE};font-weight:700;font-size:10pt;border-bottom:1.5px solid ${BLUE};margin-top:10px;margin-bottom:4px;padding-bottom:1px}
-.er{display:flex;justify-content:space-between;align-items:baseline;font-weight:700;font-size:9.5pt;margin-top:6px;margin-bottom:2px}
+.contact{text-align:center;font-size:9pt;margin-bottom:6px}
+.sh{color:${BLUE};font-weight:700;font-size:10pt;border-bottom:1.5px solid ${BLUE};margin-top:8px;margin-bottom:4px;padding-bottom:1px}
+.er{display:flex;justify-content:space-between;align-items:baseline;font-weight:700;font-size:9.5pt;margin-top:5px;margin-bottom:2px}
 .er span:first-child{flex:1;margin-right:8px}
 .dt{font-weight:400;font-style:italic;font-size:9pt;white-space:nowrap}
 .deg{font-style:italic;font-size:9pt;margin-bottom:2px;margin-top:2px}
-.bul{font-size:9pt;line-height:1.42;margin-bottom:2px;padding-left:14px;text-indent:-9px;text-align:justify}
+.bul{font-size:9pt;line-height:1.38;margin-bottom:2px;padding-left:14px;text-indent:-9px;text-align:justify}
 .bul::before{content:"• "}
-.sk{font-size:9pt;line-height:1.42;margin-bottom:3px;text-align:justify}
-.pn{font-weight:700;font-size:9.5pt;margin-top:6px;margin-bottom:2px}
-.pa{font-size:9pt;line-height:1.42;margin-bottom:2px;text-align:justify}
-@media print{@page{size:letter;margin:0}body{padding:.4in .5in;width:8.5in}}
+.sk{font-size:9pt;line-height:1.38;margin-bottom:2px;text-align:justify}
+.pn{font-weight:700;font-size:9.5pt;margin-top:5px;margin-bottom:2px}
+.pa{font-size:9pt;line-height:1.38;margin-bottom:2px;text-align:justify}
+@media print{@page{size:letter;margin:0}body{padding:.35in .5in;width:8.5in}}
 </style>
 <script>
-window.addEventListener('load',function(){
-  var body=document.body;
-  var max=800; // aggressive target — ensures single page even after reflow differences
-  // Pass 1: apply zoom based on initial scrollHeight
-  var h=body.scrollHeight;
-  if(h>max) body.style.zoom=(max/h).toFixed(4);
-  // Pass 2: after reflow, check again — if still over, also reduce font size
-  setTimeout(function(){
-    var h2=body.scrollHeight;
-    if(h2>max){
-      // Zoom alone didn't fully work — reduce base font size as second lever
-      var ratio=max/h2;
-      var fs=parseFloat(window.getComputedStyle(body).fontSize)||12.67;
-      body.style.fontSize=(fs*ratio).toFixed(2)+'px';
-    }
-    // Pass 3: final check, then print
-    setTimeout(function(){
-      var h3=body.scrollHeight;
-      if(h3>max) body.style.zoom=((parseFloat(body.style.zoom)||1)*(max/h3)).toFixed(4);
-      setTimeout(window.print,400);
-    },150);
-  },200);
-});
+window.addEventListener('load',function(){ setTimeout(window.print,400); });
 <\/script>
 </head><body>${body}</body></html>`;
 }
@@ -2095,19 +2171,19 @@ Project Name
 
 STRICT RULES — never break these:
 - ONE PAGE ONLY — HARD LIMIT: The entire resume MUST fit on one printed page. Never overflow onto page 2. When in doubt, CUT content — shorter is better than two pages.
-- WORD COUNT: Target 540–580 words total. Count every word including skills. Do NOT exceed 580 words under any circumstances.
+- WORD COUNT: Target 480–520 words total. Count every word including skills. Do NOT exceed 520 words under any circumstances.
 - SECTION SIZE LIMITS (strictly enforce):
-  • Professional Summary: EXACTLY 3 lines — no more
-  • Work Experience: most recent role = 6 bullets; older roles = 3–4 bullets
-  • Skills: keep ONLY the exact same category names as the original — do NOT add new categories. Up to 2 lines per category.
-  • Projects: 3 bullets per project
+  • Professional Summary: EXACTLY 3 sentences — each sentence max 20 words. Total summary max 55 words.
+  • Work Experience: most recent role = MAX 5 bullets; older roles = MAX 2 bullets
+  • Skills: keep ONLY the exact same category names as the original — do NOT add new categories. MAX 8 keywords per category, one line only.
+  • Projects: MAX 2 bullets per project
   • Education: keep as-is
 - Keep EVERY section that exists in the original (do not remove any section)
 - Keep every company name, date range, location, school, degree, GPA exactly as given
 - Keep contact info (name, email, phone, links) completely untouched
 - Never invent or change any number, metric, or percentage
 - Never fabricate a new work experience bullet, company, or project not in the original
-- Add missing JD keywords ONLY inside existing Skills categories — do not create new categories
+- Never create new Skills categories — only add keywords into existing ones
 - All project descriptions must use • bullet points (never plain paragraphs)
 - No markdown, no code fences, no commentary before or after the resume
 
@@ -2128,11 +2204,19 @@ JOB TITLE NORMALIZATION (apply to Work Experience titles only):
 - Never invent seniority (do not add Senior/Lead/Director if not in the original)
 - Keep company name, dates, location on the same line — only the title word(s) change
 
+KEYWORD INJECTION STRATEGY — ATS PLACEMENT (this directly determines your ATS score):
+Keywords in bullets score 3× higher with ATS systems than keywords in the Skills section.
+Follow this priority order for EVERY missing keyword:
+  1. BULLETS FIRST — reword an existing Work Experience or Project bullet to naturally include the keyword. Rephrase the sentence, change a verb, expand on a concept — whatever it takes to make it fit authentically.
+  2. SUMMARY SECOND — if the keyword represents a core competency, weave it into the Professional Summary.
+  3. SKILLS LAST — only add to Skills if the keyword is a tool/technology/certification that genuinely cannot fit into a bullet or summary.
+TARGET: At least 60% of missing keywords must appear in bullets or summary. Skills section is the last resort, not the first.
+
 WHAT TO IMPROVE:
-- PRIORITY 1: Inject every keyword from the MISSING KEYWORDS list — weave into existing bullets where natural; otherwise add to Skills section
+- PRIORITY 1: Inject every keyword from the MISSING KEYWORDS list using the placement strategy above
 - Weave additional keywords from the JD naturally into existing bullets
-- Rewrite the Professional Summary to mirror the JD's language — 3 lines, candidate-as-experienced-professional
-- Reorder skills to put JD-matching ones first
+- Rewrite the Professional Summary to mirror the JD's language — embed the 2–3 most critical missing keywords here
+- Reorder skills to put JD-matching ones first within each category
 - Upgrade weak action verbs while keeping all facts identical
 - Within each role, reorder bullets so most JD-relevant appear first
 
@@ -2179,9 +2263,19 @@ BULLET POINT STRUCTURE (Work Experience):
 
     // Compute missing keywords so the AI knows exactly what to inject
     const localMatch = getLocalMatch(cleanResumeText, job.text);
-    const missingKws = localMatch.missing
+    const localMissingKws = localMatch.missing
       .map(k => k.replace(/\s*✦$/, '').trim())  // strip preferred marker
       .filter(Boolean);
+
+    // Also pull missing keywords from any cached AI deep-analysis for this resume+job
+    const analysisCacheKey = `${resume.id}-${job.id}`;
+    const cachedAnalysis = state.analyses[analysisCacheKey];
+    const aiMissingKws = (cachedAnalysis?.missing_keywords || [])
+      .map(k => String(k).trim())
+      .filter(k => k.length > 0 && k.length < 50);
+
+    // Merge local + AI missing keywords, deduplicate, cap at 20
+    const missingKws = [...new Set([...localMissingKws, ...aiMissingKws])].slice(0, 20);
 
     const missingSection = missingKws.length > 0
       ? `\n⚠️ CRITICAL — MISSING KEYWORDS (every single one MUST appear verbatim in your output) ⚠️\nSearch the JD for these terms and embed each one naturally into a bullet or Skill line. If no bullet fits, add it to Skills. Do NOT skip any:\n${missingKws.map(k => `• ${k}`).join('\n')}\n`
@@ -2222,9 +2316,17 @@ ${missingKws.length > 0 ? `FINAL REMINDER — before you finish, verify every ke
     //    (b) AI accidentally dropped keywords that existed in the original resume.
     {
       const postMatch = getLocalMatch(tailored, job.text);
-      const stillMissing = postMatch.missing
+      const localStillMissing = postMatch.missing
         .map(k => k.replace(/\s*✦$/, '').trim())
         .filter(Boolean);
+
+      // Also check missingKws (includes AI analysis keywords) via direct substring match —
+      // catches compound phrases like "merchandising collaboration" that local match may not extract.
+      const aiStillMissing = missingKws.filter(kw =>
+        !tailored.toLowerCase().includes(kw.toLowerCase())
+      );
+
+      const stillMissing = [...new Set([...localStillMissing, ...aiStillMissing])];
 
       if (stillMissing.length > 0) {
         const tLines = tailored.split('\n');
@@ -2272,6 +2374,12 @@ ${missingKws.length > 0 ? `FINAL REMINDER — before you finish, verify every ke
         <button class="btn-ghost" data-action="download-tailored-resume" style="flex:1">📥 .txt</button>
         <button class="btn-ghost" data-action="close-modal-btn" style="flex:1">Discard</button>
       </div>
+      <div style="margin-top:14px;border-top:1px solid #e5e7eb;padding-top:12px">
+        <div style="font-size:12px;font-weight:600;margin-bottom:6px">📝 Cover Letter</div>
+        <div id="tailoredCoverLetter">
+          <div style="font-size:11px;color:#6b7280;text-align:center;padding:10px">Generating cover letter…</div>
+        </div>
+      </div>
     `);
 
     window.saveTailoredResume = async () => {
@@ -2279,8 +2387,14 @@ ${missingKws.length > 0 ? `FINAL REMINDER — before you finish, verify every ke
       await saveResume(name, tailored);
       closeModal();
       toast(`✓ "${name}" saved to your resumes`, 'success', 4000);
-      // Only refresh local match if both dropdowns are already selected (avoid spurious error toast)
+      // Refresh analyze dropdowns and auto-select the newly saved resume
+      populateAnalyzeSelects();
       const rSel = document.getElementById('analyzeResume');
+      const newResume = state.resumes[0]; // unshift puts it at top
+      if (rSel && newResume) rSel.value = newResume.id;
+      // Clear old analysis results so user starts fresh
+      document.getElementById('analyzeResults')?.classList.add('hidden');
+      document.getElementById('localMatchSection')?.classList.add('hidden');
       const jSel = document.getElementById('analyzeJob');
       if (rSel?.value && jSel?.value) doLocalMatch();
     };
@@ -2302,6 +2416,36 @@ ${missingKws.length > 0 ? `FINAL REMINDER — before you finish, verify every ke
       if (!win) { toast('Allow popups for this extension to download PDF', 'error', 4000); }
       setTimeout(() => URL.revokeObjectURL(url), 60000);
     };
+
+    // Generate cover letter in background using the tailored resume text
+    generateCoverLetter({ text: tailored, name: resume.name }, job)
+      .then(letter => {
+        const clContainer = document.getElementById('tailoredCoverLetter');
+        if (!clContainer) return;
+        clContainer.innerHTML = `
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+            <span style="font-size:11px;color:#6b7280">Based on your tailored resume · ~250 words</span>
+            <div style="display:flex;gap:6px">
+              <button id="btnCopyCLTailored" class="copy-btn">Copy</button>
+              <button id="btnSaveCLTailored" class="copy-btn" style="background:#ede9fe;color:#7c3aed;border-color:#ddd6fe">💾 Save</button>
+            </div>
+          </div>
+          <textarea id="clTailoredText" style="width:100%;height:130px;font-size:11px;border:1px solid #e5e7eb;border-radius:4px;padding:8px;resize:vertical;box-sizing:border-box;line-height:1.5">${escHtml(letter)}</textarea>
+        `;
+        document.getElementById('btnCopyCLTailored').addEventListener('click', () => {
+          const txt = document.getElementById('clTailoredText').value;
+          navigator.clipboard.writeText(txt).then(() => toast('Cover letter copied!', 'success'));
+        });
+        document.getElementById('btnSaveCLTailored').addEventListener('click', async () => {
+          const txt = document.getElementById('clTailoredText').value;
+          const clName = `CoverLetter_${positionPart}_${companyPart}`;
+          await saveCoverLetter(clName, txt);
+        });
+      })
+      .catch(() => {
+        const clContainer = document.getElementById('tailoredCoverLetter');
+        if (clContainer) clContainer.innerHTML = `<div style="font-size:11px;color:#ef4444">Cover letter generation failed. You can still generate one from the Analyze tab.</div>`;
+      });
 
   } catch (err) {
     toast('Tailoring failed: ' + err.message, 'error', 5000);
@@ -2351,6 +2495,16 @@ function renderAnalysisResults(r, resume, job) {
   results.classList.remove('hidden');
 
   results.innerHTML = `
+    <!-- Tailor button -->
+    ${state.settings.apiKey ? `
+    <div style="margin-bottom:10px;padding:10px 12px;background:#faf5ff;border:1px solid #e9d5ff;border-radius:8px;display:flex;align-items:center;justify-content:space-between;gap:8px">
+      <div>
+        <div class="text-sm text-bold" style="color:#7c3aed">${(r.match_score || 0) < 80 ? 'Match below 80%' : 'Further optimize this resume'}</div>
+        <div style="font-size:11px;color:#6b7280">AI will inject missing keywords &amp; strengthen bullets</div>
+      </div>
+      <button class="btn-sm btn-primary" id="btnTailorResumeAI" style="background:#7c3aed;white-space:nowrap;flex-shrink:0">✨ Tailor Resume</button>
+    </div>` : ''}
+
     <!-- Scores -->
     <div class="result-card">
       <div class="result-card-header">📊 Match Analysis</div>
@@ -2486,6 +2640,17 @@ function renderAnalysisResults(r, resume, job) {
       🔄 Re-analyze (clears cache, uses 1 API call)
     </button>
   `;
+
+  // Tailor button (from deep analysis view) — uses separate ID to avoid clash with local match button
+  const tailorBtnAI = document.getElementById('btnTailorResumeAI');
+  if (tailorBtnAI) tailorBtnAI.addEventListener('click', () => {
+    tailorBtnAI.disabled = true;
+    tailorBtnAI.textContent = '✨ Tailoring…';
+    tailorResumeForJob(resume, job).finally(() => {
+      tailorBtnAI.disabled = false;
+      tailorBtnAI.textContent = '✨ Tailor Resume';
+    });
+  });
 
   // Cover letter button
   document.getElementById('btnGenCoverLetter').addEventListener('click', async () => {
@@ -3020,8 +3185,34 @@ function wireEvents() {
     if (action === 'download-resume-pdf') window.downloadResumePdf(id);
     if (action === 'download-resume')     window.downloadResume(id);
     if (action === 'attach-resume')       attachResumeToPage(id);
+    if (action === 'duplicate-resume')    window.duplicateResume(id);
+    if (action === 'rename-resume')       renameResumeInline(btn, id);
     if (action === 'analyze-resume')      switchTab('analyze');
     if (action === 'delete-resume')       window.deleteResume(id);
+  });
+
+  // Cover letters list
+  document.getElementById('coverLetterList').addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-action]');
+    if (!btn) return;
+    const action = btn.dataset.action;
+    const id = btn.dataset.id;
+    const cl = state.coverLetters.find(x => x.id === id);
+    if (!cl) return;
+    if (action === 'view-cl') {
+      showModal(cl.name, cl.text);
+    } else if (action === 'copy-cl') {
+      navigator.clipboard.writeText(cl.text).then(() => toast('Cover letter copied!', 'success'));
+    } else if (action === 'download-cl') {
+      const filename = cl.name.replace(/[^a-zA-Z0-9 _\-–]/g, '').trim() + '.txt';
+      triggerTextDownload(cl.text, filename);
+    } else if (action === 'delete-cl') {
+      if (!confirm('Delete this cover letter?')) return;
+      state.coverLetters = state.coverLetters.filter(x => x.id !== id);
+      await saveCoverLetters();
+      renderCoverLetters();
+      toast('Cover letter deleted');
+    }
   });
 
   // Jobs list
