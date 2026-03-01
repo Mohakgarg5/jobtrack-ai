@@ -50,13 +50,19 @@ async function autoSaveJD(jdData, tab) {
   if (alreadySaved) {
     const existing = jobs.find(j => normalizeJobUrl(j.url) === norm);
     // Update description if the freshly-captured one is longer (first capture may
-    // have fired before LinkedIn finished rendering the job-details panel)
+    // have fired before LinkedIn finished rendering the job-details panel).
+    // Also always fix title/company if the existing title looks like a generic
+    // page title (e.g. "Search all Jobs at LinkedIn") from an early mis-capture.
     const newDescLen = (jdData.description || '').length;
     const oldDescLen = (existing.text || '').length;
-    if (newDescLen > oldDescLen) {
-      existing.text = jdData.description;
-      if (jdData.title)    existing.title   = jdData.title;
-      if (jdData.company)  existing.company = jdData.company;
+    const isBadTitle = !existing.title || existing.title === 'Untitled Job' ||
+      /search all jobs|jobs at linkedin/i.test(existing.title);
+    const isBadCompany = !existing.company || existing.company === 'Unknown Company';
+    if (newDescLen > oldDescLen || isBadTitle || isBadCompany) {
+      if (newDescLen > oldDescLen || isBadTitle) existing.text = jdData.description;
+      if (jdData.title && !/search all jobs|jobs at linkedin/i.test(jdData.title))
+        existing.title = jdData.title;
+      if (jdData.company && jdData.company !== 'Unknown Company') existing.company = jdData.company;
       if (jdData.location) existing.location = jdData.location;
       await chrome.storage.local.set({ [JT_JOBS_KEY]: jobs });
       // Invalidate stale analyses that were cached with the old (empty) JD text
@@ -152,36 +158,42 @@ function setBadge(tabId, text, color) {
   chrome.action.setBadgeBackgroundColor({ color, tabId }).catch(() => {});
 }
 
-// Clear badge when user leaves a job page
-chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+// ── tabs.onUpdated: capture on full-page loads to LinkedIn job pages ──────────
+// webNavigation.onHistoryStateUpdated only fires for SPA pushState navigation.
+// Full page loads (e.g. company filter / originToLandingJobPostings URLs opened
+// directly) need a separate handler.
+async function triggerLinkedInCapture(tabId, url) {
+  const isSlowPage = url.includes('f_C=') || url.includes('originToLandingJobPostings=') || url.includes('f_E=');
+  const waitMs = isSlowPage ? 6000 : 3500;
+  await new Promise(r => setTimeout(r, waitMs));
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['content/content.js'] }).catch(() => {});
+    const response = await chrome.tabs.sendMessage(tabId, { type: 'CAPTURE_JD' });
+    if (response?.success && response.data?.description?.length > 50) {
+      await autoSaveJD(response.data, { id: tabId, url });
+    }
+  } catch (_) {}
+}
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status === 'loading') {
     chrome.action.setBadgeText({ text: '', tabId }).catch(() => {});
+    return;
+  }
+  // Full page load complete — check if it's a LinkedIn job page
+  if (changeInfo.status === 'complete') {
+    const url = tab.url || '';
+    if (url.includes('linkedin.com/jobs') && url.includes('currentJobId=')) {
+      triggerLinkedInCapture(tabId, url);
+    }
   }
 });
 
 // ── Auto-capture on SPA navigation (LinkedIn search/collections) ──────────────
-// webNavigation.onHistoryStateUpdated fires for every history.pushState call,
-// making it far more reliable than MutationObserver in the content script.
-chrome.webNavigation.onHistoryStateUpdated.addListener(async (details) => {
+// webNavigation.onHistoryStateUpdated fires for every history.pushState call.
+chrome.webNavigation.onHistoryStateUpdated.addListener((details) => {
   const url = details.url || '';
-  // Only act on LinkedIn job pages with a specific job selected
   if (!url.includes('linkedin.com/jobs')) return;
   if (!url.includes('currentJobId=')) return;
-
-  const tabId = details.tabId;
-
-  // Wait for the job panel content to render
-  setTimeout(async () => {
-    try {
-      await chrome.scripting.executeScript({
-        target: { tabId },
-        files: ['content/content.js']
-      }).catch(() => {});
-
-      const response = await chrome.tabs.sendMessage(tabId, { type: 'CAPTURE_JD' });
-      if (response?.success && response.data?.description?.length > 50) {
-        await autoSaveJD(response.data, { id: tabId, url });
-      }
-    } catch (_) {}
-  }, 3500);
+  triggerLinkedInCapture(details.tabId, url);
 });

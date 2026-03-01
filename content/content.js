@@ -21,33 +21,122 @@
 
     // ── LinkedIn ─────────────────────────────────────────────────────────
     if (hostname.includes('linkedin.com')) {
-      title = title || getTextFromSelectors([
-        '.job-details-jobs-unified-top-card__job-title h1',
-        '.jobs-unified-top-card__job-title',
-        '.job-details-jobs-unified-top-card__job-title',
-        '.jobs-unified-top-card__job-title h1',
-        '.job-view-layout h1',
-        '.scaffold-layout__detail h1',
-        'h1.t-24'
-      ]);
-      company = company || getTextFromSelectors([
-        '.job-details-jobs-unified-top-card__company-name a',
-        '.job-details-jobs-unified-top-card__company-name',
-        '.jobs-unified-top-card__company-name a',
-        '.jobs-unified-top-card__company-name',
-        '.job-details-jobs-unified-top-card__primary-description a',
-        '.topcard__org-name-link',
-        'a[data-tracking-control-name*="topcard-org"]'
-      ]);
-      // Fallback: extract from page title "Job Title at Company | LinkedIn"
-      if (!company) {
-        const atMatch = document.title.match(/\bat\s+(.+?)\s*[|\u2013\u2014]/);
-        if (atMatch) company = atMatch[1].trim();
+      // Standard class-name selectors — use direct querySelector with low threshold
+      // because getTextFromSelectors requires > 10 chars which cuts off short titles.
+      if (!title) {
+        const titleSelectors = [
+          '.job-details-jobs-unified-top-card__job-title h1',
+          '.jobs-unified-top-card__job-title h1',
+          '.job-details-jobs-unified-top-card__job-title',
+          '.jobs-unified-top-card__job-title',
+          '.job-view-layout h1',
+          '.scaffold-layout__detail h1',
+          'h1.t-24',
+          'h2.t-24',
+          '.jobs-search__job-details--container h1'
+        ];
+        for (const sel of titleSelectors) {
+          try {
+            const el = document.querySelector(sel);
+            const txt = el && el.innerText && el.innerText.trim();
+            if (txt && txt.length > 2 && txt.length < 300) { title = txt; break; }
+          } catch (_) {}
+        }
       }
+      // Overlay mode: originToLandingJobPostings shows job in a dialog on top of the feed
+      if (!title) {
+        const overlay = document.querySelector('[role="dialog"], .artdeco-modal__content');
+        if (overlay) {
+          const h = overlay.querySelector('h1, h2, h3');
+          if (h && h.innerText.trim().length > 3 && h.innerText.trim().length < 200) {
+            title = h.innerText.trim();
+          }
+        }
+      }
+
+      // ── Company extraction: class-name selectors (quick attempt) ──────────
+      // Use direct querySelector with length > 1 since company names can be very short.
+      if (!company) {
+        const companySelectors = [
+          '.job-details-jobs-unified-top-card__company-name a',
+          '.job-details-jobs-unified-top-card__company-name',
+          '.jobs-unified-top-card__company-name a',
+          '.jobs-unified-top-card__company-name',
+          '[class*="jobs-unified-top-card__company"] a',
+          '[class*="jobs-unified-top-card__company"]',
+          '.job-details-jobs-unified-top-card__primary-description a',
+          '.topcard__org-name-link',
+          'a[data-tracking-control-name*="topcard-org"]'
+        ];
+        for (const sel of companySelectors) {
+          try {
+            const el = document.querySelector(sel);
+            const txt = el && el.innerText && el.innerText.split('\n')[0].split('·')[0].trim();
+            if (txt && txt.length > 1 && txt.length < 100) { company = txt; break; }
+          } catch (_) {}
+        }
+      }
+
+      // ── H1-anchor approach (most robust — class-name independent) ─────────
+      // LinkedIn's job detail panel is the only part of the page with an <h1>.
+      // Walk up from that H1 to find the nearest /company/ link in its ancestor tree.
+      if (!company) {
+        try {
+          const detailH1 = Array.from(document.querySelectorAll('h1')).find(h => {
+            const t = h.innerText.trim();
+            return t.length > 3 && !/^(notifications?|feed|messaging|jobs in )/i.test(t);
+          });
+          if (detailH1) {
+            let el = detailH1.parentElement;
+            for (let i = 0; i < 12 && el && !company; i++) {
+              const link = el.querySelector('a[href*="/company/"]');
+              if (link) {
+                const txt = link.innerText.split('\n')[0].split('·')[0].trim();
+                if (txt.length > 1 && txt.length < 100) company = txt;
+              }
+              el = el.parentElement;
+            }
+          }
+        } catch (_) {}
+      }
+
+      // ── data-job-id card lookup ───────────────────────────────────────────
+      if (!company) {
+        try {
+          const jobId = new URL(location.href).searchParams.get('currentJobId');
+          if (jobId) {
+            const card = document.querySelector(`[data-job-id="${jobId}"], [data-occludable-job-id="${jobId}"]`);
+            if (card) {
+              const cardSelectors = [
+                '.job-card-container__primary-description',
+                '.artdeco-entity-lockup__subtitle',
+                'span[class*="primary-description"]',
+                'a[href*="/company/"]'
+              ];
+              for (const sel of cardSelectors) {
+                const el = card.querySelector(sel);
+                const txt = el && el.innerText && el.innerText.split('\n')[0].split('·')[0].trim();
+                if (txt && txt.length > 1 && txt.length < 100) { company = txt; break; }
+              }
+            }
+          }
+        } catch (_) {}
+      }
+
+      // ── Page title "at Company" regex ─────────────────────────────────────
+      if (!company) {
+        const atMatch = document.title.replace(/^\(\d+\)\s*/, '').match(/\bat\s+(.+?)\s*[|\u2013\u2014]/);
+        if (atMatch) {
+          const extracted = atMatch[1].trim();
+          if (extracted !== 'LinkedIn') company = extracted;
+        }
+      }
+
       location = location || getTextFromSelectors([
         '.job-details-jobs-unified-top-card__bullet',
         '.jobs-unified-top-card__workplace-type'
       ]);
+
       description = description || getTextFromSelectors([
         '#job-details',
         '.jobs-description__content .jobs-box__html-content',
@@ -58,6 +147,14 @@
         '[class*="jobs-description-content"]',
         '.jobs-search__job-details--container'
       ]);
+      // Overlay mode description
+      if (!description) {
+        const overlay = document.querySelector('[role="dialog"], .artdeco-modal__content');
+        if (overlay) {
+          const descEl = overlay.querySelector('#job-details, [class*="description"]');
+          description = (descEl || overlay).innerText.trim();
+        }
+      }
     }
 
     // ── Indeed ───────────────────────────────────────────────────────────
@@ -687,7 +784,11 @@
       description = genericExtractDescription();
     }
     if (!title) {
-      title = genericExtractTitle();
+      // Skip generic title extraction for LinkedIn — document.title on search/company-filter
+      // pages says "(n) Search all Jobs | LinkedIn" (with notification badge count).
+      if (!hostname.includes('linkedin.com')) {
+        title = genericExtractTitle();
+      }
     }
     if (!company) {
       company = extractCompanyFromDomain();
@@ -853,8 +954,9 @@
     const titleParts = document.title.split(/[|–\-—]/);
     if (titleParts.length >= 2) {
       const candidate = titleParts[titleParts.length - 1].trim();
-      // Reject generic words that aren't company names
-      if (candidate.length > 2 && !/careers|jobs|job board|recruiting|apply|hiring/i.test(candidate)) {
+      // Reject job board names and generic words
+      if (candidate.length > 2 && !JOB_BOARD_NAMES.test(candidate) &&
+          !/careers|jobs|job board|recruiting|apply|hiring/i.test(candidate)) {
         return candidate;
       }
     }
@@ -916,8 +1018,8 @@
     if (hostname.includes('linkedin.com')) {
       // Direct job view pages are always valid
       if (/\/jobs\/view\//i.test(url)) return true;
-      // Search pages: always allow (job is shown in the right panel)
-      if (/\/jobs\/search\//i.test(url)) return true;
+      // Search/search-results pages: allow when a job is selected
+      if (/\/jobs\/search/i.test(url)) return true;
       // Collections pages (e.g. "Top job picks for you"): only capture when
       // a specific job is open in the panel (currentJobId in URL)
       if (/\/jobs\/collections\//i.test(url)) {
@@ -929,13 +1031,35 @@
   }
 
   // Run extraction after a delay to let dynamic content load
-  setTimeout(() => {
+  setTimeout(async () => {
     if (!isLikelyJobPage()) return;
     const jobData = extractJobData();
+    // LinkedIn: try fetch fallback on initial page load (handles company-filtered
+    // pages where the DOM is feed content with no job-specific elements).
+    if (hostname.includes('linkedin.com')) {
+      const needsFetch = !jobData.title || jobData.title === 'Untitled Job' ||
+                         !jobData.company || jobData.company === 'Unknown Company' ||
+                         !jobData.description || jobData.description.length < 200;
+      if (needsFetch) {
+        try {
+          const jobId = new URL(location.href).searchParams.get('currentJobId');
+          if (jobId) {
+            const fetched = await fetchLinkedInJob(jobId);
+            if (fetched) {
+              if (fetched.title)       jobData.title       = fetched.title;
+              if (fetched.company)     jobData.company     = fetched.company;
+              if (fetched.location)    jobData.location    = fetched.location;
+              if (fetched.description) jobData.description = fetched.description;
+              jobData.url = `https://www.linkedin.com/jobs/view/${jobId}/`;
+            }
+          }
+        } catch (_) {}
+      }
+    }
     if (jobData.description && jobData.description.length > 100) {
       sendJobData(jobData);
     }
-  }, 2000);
+  }, 3500);
 
   // ── Auto-fill helpers ────────────────────────────────────────────────────
 
@@ -1108,9 +1232,30 @@
     if (location.href === _jtLastUrl) return;
     _jtLastUrl = location.href;
     clearTimeout(window._jtSpaTimer);
-    window._jtSpaTimer = setTimeout(() => {
+    window._jtSpaTimer = setTimeout(async () => {
       if (!isLikelyJobPage()) return;
       const jobData = extractJobData();
+      // LinkedIn fetch fallback (same logic as CAPTURE_JD handler)
+      if (hostname.includes('linkedin.com')) {
+        const needsFetch = !jobData.title || jobData.title === 'Untitled Job' ||
+                           !jobData.company || jobData.company === 'Unknown Company' ||
+                           !jobData.description || jobData.description.length < 200;
+        if (needsFetch) {
+          try {
+            const jobId = new URL(location.href).searchParams.get('currentJobId');
+            if (jobId) {
+              const fetched = await fetchLinkedInJob(jobId);
+              if (fetched) {
+                if (fetched.title)       jobData.title       = fetched.title;
+                if (fetched.company)     jobData.company     = fetched.company;
+                if (fetched.location)    jobData.location    = fetched.location;
+                if (fetched.description) jobData.description = fetched.description;
+                jobData.url = `https://www.linkedin.com/jobs/view/${jobId}/`;
+              }
+            }
+          } catch (_) {}
+        }
+      }
       if (jobData.description && jobData.description.length > 100) sendJobData(jobData);
     }, 4000);
   }
@@ -1128,11 +1273,109 @@
   })();
   window.addEventListener('popstate', _jtOnUrlChange);
 
+  // Fetch LinkedIn job data directly from /jobs/view/{id}/ (server-rendered HTML
+  // includes JSON-LD structured data regardless of client-side DOM state).
+  async function fetchLinkedInJob(jobId) {
+    try {
+      const resp = await fetch(`https://www.linkedin.com/jobs/view/${jobId}/`, { credentials: 'include' });
+      if (!resp.ok) return null;
+      const html = await resp.text();
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      let title = '', company = '', location = '', description = '';
+
+      // Strategy 1: JSON-LD structured data (most reliable)
+      for (const script of doc.querySelectorAll('script[type="application/ld+json"]')) {
+        try {
+          const items = [].concat(JSON.parse(script.textContent));
+          const jp = items.find(i => i['@type'] === 'JobPosting');
+          if (jp) {
+            title       = jp.title || '';
+            company     = jp.hiringOrganization?.name || '';
+            location    = jp.jobLocation?.address?.addressLocality || jp.jobLocation?.address?.addressRegion || '';
+            description = (jp.description || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+            break;
+          }
+        } catch (_) {}
+      }
+
+      // Strategy 2: OpenGraph meta tags — run whenever title OR company is missing
+      // (JSON-LD often has the title but omits hiringOrganization.name for small companies)
+      if (!title || !company) {
+        const ogTitle = doc.querySelector('meta[property="og:title"]')?.getAttribute('content') || '';
+        const atMatch = ogTitle.match(/^(.+?)\s+at\s+(.+?)\s*[|\u2013\u2014]/);
+        if (atMatch) {
+          if (!title)   title   = atMatch[1].trim();
+          if (!company) company = atMatch[2].trim();
+        } else if (ogTitle && !title) {
+          title = ogTitle.split(/[|\u2013\u2014]/)[0].trim();
+        }
+      }
+
+      // Strategy 3: Page title fallback for title; also try "at Company" for company
+      if (!title && doc.title) {
+        const parts = doc.title.split(/\s*[|\u2013\u2014]\s*/);
+        if (parts.length >= 2 && parts[0].trim().length > 3) title = parts[0].trim();
+      }
+      if (!company && doc.title) {
+        const atMatch = doc.title.replace(/^\(\d+\)\s*/, '').match(/\bat\s+(.+?)\s*[|\u2013\u2014]/);
+        if (atMatch && atMatch[1].trim() !== 'LinkedIn') company = atMatch[1].trim();
+      }
+
+      // Strategy 4: Standard HTML selectors on fetched page (textContent works on DOMParser docs)
+      if (!title) {
+        const h = doc.querySelector(
+          '.job-details-jobs-unified-top-card__job-title h1, h1.t-24, h1.topcard__title, .topcard__title'
+        );
+        if (h) title = (h.textContent || '').trim();
+      }
+      if (!company) {
+        const c = doc.querySelector(
+          '.job-details-jobs-unified-top-card__company-name a, .topcard__org-name-link, .topcard__flavor a'
+        );
+        if (c) company = (c.textContent || '').trim();
+      }
+      if (!description) {
+        const d = doc.querySelector('#job-details, .jobs-description-content__text, .description__text, .show-more-less-html__markup');
+        if (d) description = (d.textContent || '').replace(/\s+/g, ' ').trim();
+      }
+
+      return (title || description.length > 50) ? { title, company, location, description } : null;
+    } catch (_) { return null; }
+  }
+
   // Listen for explicit capture requests from popup
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'CAPTURE_JD') {
-      const data = extractJobData();
-      sendResponse({ success: true, data });
+      (async () => {
+        const data = extractJobData();
+        // For LinkedIn: always try the direct fetch fallback when title or
+        // description is missing. DOM selectors fail on many LinkedIn page
+        // variants (overlay mode, company-filtered, etc.) because LinkedIn's
+        // class names change frequently. The /jobs/view/ server-rendered page
+        // always has reliable JSON-LD structured data.
+        if (hostname.includes('linkedin.com')) {
+          const needsFetch = !data.title || data.title === 'Untitled Job' ||
+                             !data.company || data.company === 'Unknown Company' ||
+                             !data.description || data.description.length < 200;
+          if (needsFetch) {
+            try {
+              const jobId = new URL(window.location.href).searchParams.get('currentJobId');
+              if (jobId) {
+                const fetched = await fetchLinkedInJob(jobId);
+                if (fetched) {
+                  if (fetched.title)       data.title       = fetched.title;
+                  if (fetched.company)     data.company     = fetched.company;
+                  if (fetched.location)    data.location    = fetched.location;
+                  if (fetched.description) data.description = fetched.description;
+                  data.url = `https://www.linkedin.com/jobs/view/${jobId}/`;
+                }
+              }
+            } catch (_) {}
+          }
+        }
+        sendResponse({ success: true, data });
+      })();
+      return true; // keep channel open for async sendResponse
     }
     if (message.type === 'FILL_FORM') {
       tryAutoFill()

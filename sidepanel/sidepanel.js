@@ -1752,6 +1752,7 @@ function renderJobs() {
       <div class="card-actions">
         <button class="btn-link" data-action="view-job" data-id="${j.id}">Full JD</button>
         <button class="btn-link green" data-action="analyze-job" data-id="${j.id}">Analyze</button>
+        <button class="btn-link" data-action="edit-job" data-id="${j.id}">Edit</button>
         ${isApplied
           ? `<span style="color:var(--success);font-size:11px;font-weight:600">✓ Applied</span>`
           : `<button class="btn-link" data-action="mark-applied-job" data-id="${j.id}">Mark Applied</button>`}
@@ -1772,6 +1773,37 @@ window.deleteJob = async (id) => {
   await save(SK.JOBS, state.jobs);
   renderJobs();
   toast('Job deleted');
+};
+
+window.editJob = (id) => {
+  const j = state.jobs.find(x => x.id === id);
+  if (!j) return;
+  showHtmlModal('Edit Job', `
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <label style="font-size:12px;font-weight:600;color:var(--text-secondary)">Job Title</label>
+      <input id="editJobTitle" class="text-input" value="${escHtml(j.title)}" style="width:100%;box-sizing:border-box">
+      <label style="font-size:12px;font-weight:600;color:var(--text-secondary)">Company</label>
+      <input id="editJobCompany" class="text-input" value="${escHtml(j.company)}" style="width:100%;box-sizing:border-box">
+      <label style="font-size:12px;font-weight:600;color:var(--text-secondary)">Location</label>
+      <input id="editJobLocation" class="text-input" value="${escHtml(j.location || '')}" style="width:100%;box-sizing:border-box">
+      <button class="btn-primary" style="margin-top:4px" data-action="save-job-edit" data-id="${id}">Save Changes</button>
+    </div>
+  `);
+};
+
+window.saveJobEdit = async (id) => {
+  const j = state.jobs.find(x => x.id === id);
+  if (!j) return;
+  const title    = document.getElementById('editJobTitle')?.value.trim();
+  const company  = document.getElementById('editJobCompany')?.value.trim();
+  const location = document.getElementById('editJobLocation')?.value.trim();
+  if (title)    j.title    = title;
+  if (company)  j.company  = company;
+  if (location !== undefined) j.location = location;
+  await save(SK.JOBS, state.jobs);
+  closeModal();
+  renderJobs();
+  toast('Job updated');
 };
 
 window.markJobAppliedFromList = (id) => {
@@ -3223,6 +3255,7 @@ function wireEvents() {
     const id = btn.dataset.id;
     if (action === 'view-job')        window.viewJob(id);
     if (action === 'analyze-job')     window.analyzeWith(id);
+    if (action === 'edit-job')        window.editJob(id);
     if (action === 'delete-job')      window.deleteJob(id);
     if (action === 'mark-applied-job') window.markJobAppliedFromList(id);
   });
@@ -3266,6 +3299,9 @@ function wireEvents() {
 
     const dlPdf = e.target.closest('[data-action="download-tailored-pdf"]');
     if (dlPdf) window.downloadTailoredPdf?.();
+
+    const saveJobEdit = e.target.closest('[data-action="save-job-edit"]');
+    if (saveJobEdit) window.saveJobEdit(saveJobEdit.dataset.id);
   });
 
   // ── Listen for messages from popup / background ───────────────────
@@ -3282,7 +3318,8 @@ function wireEvents() {
         state.jobs = data[SK.JOBS] || [];
         if (state.activeTab === 'jobs') renderJobs(); // keep jobs list fresh
         const job = state.jobs.find(j => j.id === msg.jobId);
-        if (job) showJobBanner(job, msg.isNew);
+        // Only show banner for genuinely new captures — not for updates to already-saved jobs
+        if (job && msg.isNew) showJobBanner(job, true);
       });
     }
     if (msg.type === 'NAVIGATE_TO') {
@@ -3516,12 +3553,16 @@ function showJobBanner(job, isNew) {
   banner.dataset.jobId = job.id;
   title.textContent = isNew
     ? `✨ ${job.title} at ${job.company}`
-    : `📌 ${job.title} at ${job.company}`;
+    : `🚀 ${job.title} at ${job.company}`;
   sub.textContent = isNew
     ? 'Auto-saved! Click to analyze with your best resume →'
     : 'Already in your library. Click to analyze →';
 
   banner.classList.remove('hidden');
+
+  // Auto-dismiss after 6 seconds — clear any previous timer first
+  clearTimeout(window._bannerDismissTimer);
+  window._bannerDismissTimer = setTimeout(hideJobBanner, 6000);
 }
 
 function hideJobBanner() {
@@ -3555,9 +3596,7 @@ async function checkCurrentTabOnLoad() {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab?.url) return;
 
-    // Check if current URL matches any saved job
-    const match = state.jobs.find(j => j.url && tab.url.startsWith(j.url.split('?')[0]));
-    if (match) showJobBanner(match, false);
+    // (No banner on startup — banner only shows for new auto-captures)
   } catch (_) {}
 }
 
