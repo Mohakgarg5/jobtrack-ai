@@ -2507,6 +2507,13 @@ async function doAIAnalysis() {
 
   try {
     const { result, cached } = await analyzeResumeVsJD(resume, job);
+    // Stale-check: if user switched to a different job while analysis was running, discard results
+    const currentJobId = document.getElementById('analyzeJob')?.value;
+    if (currentJobId !== job.id) {
+      loading.classList.add('hidden');
+      toast('Job changed — analysis discarded (run again for current job)', 'error', 4000);
+      return;
+    }
     loading.classList.add('hidden');
     renderAnalysisResults(result, resume, job);
     if (cached) toast('Showing cached analysis (saved API credits)');
@@ -3585,6 +3592,10 @@ function autoSelectBestResume(jobId) {
 
   const rSel = document.getElementById('analyzeResume');
   if (rSel) rSel.value = bestId;
+
+  // Clear stale AI analysis results from any previous job
+  document.getElementById('analyzeResults')?.classList.add('hidden');
+  document.getElementById('analyzeLoading')?.classList.add('hidden');
 
   // Auto-run local match immediately (free)
   doLocalMatch();
