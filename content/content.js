@@ -1031,6 +1031,11 @@
       if (/\/jobs\/collections\//i.test(url)) {
         return /[?&]currentJobId=\d+/.test(url);
       }
+      // Any other LinkedIn jobs page (e.g. /jobs/ home, recommendations, etc.)
+      // is valid as long as a specific job is selected (currentJobId in URL)
+      if (/linkedin\.com\/jobs/i.test(url) && /[?&]currentJobId=\d+/.test(url)) {
+        return true;
+      }
       return false;
     }
     return true; // all other known job-site hostnames are fine
