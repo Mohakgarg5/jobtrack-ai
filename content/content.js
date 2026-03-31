@@ -77,17 +77,23 @@
         }
       }
 
-      // ── H1-anchor approach (most robust — class-name independent) ─────────
-      // LinkedIn's job detail panel is the only part of the page with an <h1>.
-      // Walk up from that H1 to find the nearest /company/ link in its ancestor tree.
+      // ── H1/H2-anchor approach (most robust — class-name independent) ──────
+      // LinkedIn's job detail panel has an <h1> or <h2> for the title.
+      // Walk up from that heading to find the nearest /company/ link in its ancestor tree.
       if (!company) {
         try {
-          const detailH1 = Array.from(document.querySelectorAll('h1')).find(h => {
+          // Try h1 first, fall back to h2 (search-results panels often use h2)
+          const headingCandidates = [
+            ...Array.from(document.querySelectorAll('h1')),
+            ...Array.from(document.querySelectorAll('h2'))
+          ];
+          const detailHeading = headingCandidates.find(h => {
             const t = h.innerText.trim();
-            return t.length > 3 && !/^(notifications?|feed|messaging|jobs in )/i.test(t);
+            return t.length > 3 && t.length < 300 &&
+              !/^(notifications?|feed|messaging|jobs in |sign in|join)/i.test(t);
           });
-          if (detailH1) {
-            let el = detailH1.parentElement;
+          if (detailHeading) {
+            let el = detailHeading.parentElement;
             for (let i = 0; i < 12 && el && !company; i++) {
               const link = el.querySelector('a[href*="/company/"]');
               if (link) {
@@ -1038,7 +1044,7 @@
     // pages where the DOM is feed content with no job-specific elements).
     if (hostname.includes('linkedin.com')) {
       const needsFetch = !jobData.title || jobData.title === 'Untitled Job' ||
-                         !jobData.company || jobData.company === 'Unknown Company' ||
+                         !jobData.company || jobData.company === 'Unknown Company' || jobData.company === '' ||
                          !jobData.description || jobData.description.length < 200;
       if (needsFetch) {
         try {
@@ -1277,7 +1283,10 @@
   // includes JSON-LD structured data regardless of client-side DOM state).
   async function fetchLinkedInJob(jobId) {
     try {
-      const resp = await fetch(`https://www.linkedin.com/jobs/view/${jobId}/`, { credentials: 'include' });
+      const resp = await fetch(`https://www.linkedin.com/jobs/view/${jobId}/`, {
+        credentials: 'include',
+        headers: { 'Accept': 'text/html,application/xhtml+xml', 'Accept-Language': 'en-US,en;q=0.9' }
+      });
       if (!resp.ok) return null;
       const html = await resp.text();
       const doc = new DOMParser().parseFromString(html, 'text/html');
@@ -1302,12 +1311,19 @@
       // (JSON-LD often has the title but omits hiringOrganization.name for small companies)
       if (!title || !company) {
         const ogTitle = doc.querySelector('meta[property="og:title"]')?.getAttribute('content') || '';
+        // Pattern: "Job Title at Company Name | LinkedIn"
         const atMatch = ogTitle.match(/^(.+?)\s+at\s+(.+?)\s*[|\u2013\u2014]/);
         if (atMatch) {
           if (!title)   title   = atMatch[1].trim();
           if (!company) company = atMatch[2].trim();
         } else if (ogTitle && !title) {
           title = ogTitle.split(/[|\u2013\u2014]/)[0].trim();
+        }
+        // Try og:description for company: "Apply for Product Manager at Acme Corp..."
+        if (!company) {
+          const ogDesc = doc.querySelector('meta[property="og:description"]')?.getAttribute('content') || '';
+          const applyMatch = ogDesc.match(/\bat\s+([A-Za-z0-9][^.!?\n]{1,80}?)[\s.]/);
+          if (applyMatch) company = applyMatch[1].trim();
         }
       }
 
@@ -1323,16 +1339,38 @@
 
       // Strategy 4: Standard HTML selectors on fetched page (textContent works on DOMParser docs)
       if (!title) {
-        const h = doc.querySelector(
-          '.job-details-jobs-unified-top-card__job-title h1, h1.t-24, h1.topcard__title, .topcard__title'
-        );
-        if (h) title = (h.textContent || '').trim();
+        const titleSelectors = [
+          '.job-details-jobs-unified-top-card__job-title h1',
+          '.jobs-unified-top-card__job-title h1',
+          'h1.t-24', 'h2.t-24',
+          'h1.topcard__title', '.topcard__title',
+          '[class*="job-details"] h1', '[class*="job-details"] h2',
+          'h1', 'h2'
+        ];
+        for (const sel of titleSelectors) {
+          const h = doc.querySelector(sel);
+          const txt = h && (h.textContent || '').trim();
+          if (txt && txt.length > 3 && txt.length < 300 && !/^(sign in|join now|linkedin)/i.test(txt)) {
+            title = txt; break;
+          }
+        }
       }
       if (!company) {
-        const c = doc.querySelector(
-          '.job-details-jobs-unified-top-card__company-name a, .topcard__org-name-link, .topcard__flavor a'
-        );
-        if (c) company = (c.textContent || '').trim();
+        const companySelectors = [
+          '.job-details-jobs-unified-top-card__company-name a',
+          '.job-details-jobs-unified-top-card__company-name',
+          '.jobs-unified-top-card__company-name a',
+          '.topcard__org-name-link', '.topcard__flavor a',
+          '[class*="company-name"] a', '[class*="company-name"]',
+          'a[href*="/company/"]'
+        ];
+        for (const sel of companySelectors) {
+          const c = doc.querySelector(sel);
+          const txt = c && (c.textContent || '').split('\n')[0].split('·')[0].trim();
+          if (txt && txt.length > 1 && txt.length < 100 && !/^(linkedin|sign in)/i.test(txt)) {
+            company = txt; break;
+          }
+        }
       }
       if (!description) {
         const d = doc.querySelector('#job-details, .jobs-description-content__text, .description__text, .show-more-less-html__markup');
@@ -1355,7 +1393,7 @@
         // always has reliable JSON-LD structured data.
         if (hostname.includes('linkedin.com')) {
           const needsFetch = !data.title || data.title === 'Untitled Job' ||
-                             !data.company || data.company === 'Unknown Company' ||
+                             !data.company || data.company === 'Unknown Company' || data.company === '' ||
                              !data.description || data.description.length < 200;
           if (needsFetch) {
             try {

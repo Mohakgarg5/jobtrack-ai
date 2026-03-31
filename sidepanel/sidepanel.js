@@ -2203,8 +2203,9 @@ window.addEventListener('load',function(){ setTimeout(window.print,400); });
 }
 
 // ── Cover Letter → formatted HTML (for print-to-PDF) ─────────────────
-function coverLetterToHtml(text, profile) {
+function coverLetterToHtml(text, profile, docTitle) {
   profile = profile || {};
+  docTitle = docTitle || 'Cover Letter';
   function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
   const fullName = [profile.firstName, profile.lastName].filter(Boolean).join(' ') || profile.displayName || '';
@@ -2249,7 +2250,7 @@ function coverLetterToHtml(text, profile) {
   if (fullName) body += `<div class="cl-sig">${esc(fullName)}</div>`;
 
   return `<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><title>Cover Letter</title>
+<html><head><meta charset="UTF-8"><title>${esc(docTitle)}</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:Calibri,Arial,sans-serif;font-size:11pt;color:#000;background:#fff;padding:.75in 1in;width:8.5in;line-height:1.5}
@@ -2268,7 +2269,7 @@ a{color:#1155CC;text-decoration:none}
 }
 
 function downloadCoverLetterPdf(text, filename, profile) {
-  const html = coverLetterToHtml(text, profile);
+  const html = coverLetterToHtml(text, profile, filename);
   const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
   const url  = URL.createObjectURL(blob);
   const win  = window.open(url, '_blank');
@@ -2848,7 +2849,8 @@ function renderAnalysisResults(r, resume, job) {
       document.getElementById('btnDownloadCLPdfAnalyze').addEventListener('click', () => {
         const txt = document.getElementById('coverLetterText').value;
         const activeP = state.profiles.find(x => x.id === state.activeProfileId) || state.profiles[0] || {};
-        downloadCoverLetterPdf(txt, 'Cover_Letter', activeP);
+        const companySlug = (job.company || '').replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_|_$/g, '');
+        downloadCoverLetterPdf(txt, `Cover_Letter${companySlug ? '_' + companySlug : ''}`, activeP);
       });
       toast('Cover letter generated!', 'success');
     } catch (err) {

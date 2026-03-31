@@ -57,12 +57,13 @@ async function autoSaveJD(jdData, tab) {
     const oldDescLen = (existing.text || '').length;
     const isBadTitle = !existing.title || existing.title === 'Untitled Job' ||
       /search all jobs|jobs at linkedin/i.test(existing.title);
-    const isBadCompany = !existing.company || existing.company === 'Unknown Company';
+    const isBadCompany = !existing.company || existing.company === 'Unknown Company' || existing.company === '';
     if (newDescLen > oldDescLen || isBadTitle || isBadCompany) {
       if (newDescLen > oldDescLen || isBadTitle) existing.text = jdData.description;
-      if (jdData.title && !/search all jobs|jobs at linkedin/i.test(jdData.title))
+      if (jdData.title && jdData.title !== 'Untitled Job' && !/search all jobs|jobs at linkedin/i.test(jdData.title))
         existing.title = jdData.title;
-      if (jdData.company && jdData.company !== 'Unknown Company') existing.company = jdData.company;
+      if (jdData.company && jdData.company !== 'Unknown Company' && jdData.company !== '')
+        existing.company = jdData.company;
       if (jdData.location) existing.location = jdData.location;
       await chrome.storage.local.set({ [JT_JOBS_KEY]: jobs });
       // Invalidate stale analyses that were cached with the old (empty) JD text
