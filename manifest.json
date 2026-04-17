@@ -85,7 +85,9 @@
         "https://www.builtinchicago.org/job/*",
         "https://www.builtinboston.com/job/*",
         "https://builtin.com/job/*",
-        "https://*.lever.co/*"
+        "https://*.lever.co/*",
+        "https://jobright.ai/jobs/*",
+        "https://www.jobright.ai/jobs/*"
       ],
       "js": ["content/content.js"],
       "run_at": "document_idle"

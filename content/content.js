@@ -4,6 +4,11 @@
 (function () {
   'use strict';
 
+  // Guard against re-injection (service worker re-injects on every SPA navigation).
+  // All listeners and observers are already live from the first run.
+  if (window._jtContentScriptLoaded) return;
+  window._jtContentScriptLoaded = true;
+
   const hostname = window.location.hostname;
 
   function extractJobData() {
@@ -170,12 +175,16 @@
         'h1.jobsearch-JobInfoHeader-title',
         '.jobsearch-JobInfoHeader h1'
       ]);
+      // Strip " - job post" / "- new" suffixes Indeed appends in some contexts
+      if (title) title = title.replace(/\s*[-–]\s*(job post|new)$/i, '').trim();
       company = company || getTextFromSelectors([
         '[data-testid="inlineHeader-companyName"] a',
+        '[data-testid="inlineHeader-companyName"]',
         '.jobsearch-InlineCompanyRating-companyHeader a'
       ]);
       location = location || getTextFromSelectors([
         '[data-testid="job-location"]',
+        '[data-testid="jobsearch-JobInfoHeader-companyLocation"]',
         '.jobsearch-JobInfoHeader-subtitle .jobsearch-JobInfoHeader-text'
       ]);
       description = description || getTextFromSelectors([
@@ -785,6 +794,26 @@
       ]);
     }
 
+    // ── JobRight ─────────────────────────────────────────────────────────
+    else if (hostname.includes('jobright.ai')) {
+      // JSON-LD JobPosting schema is present on all /jobs/info/ pages and
+      // gives us clean title, company, full HTML description, and location.
+      // Just strip the "[Remote]" / "[On-site]" prefix JobRight adds to titles.
+      if (title) title = title.replace(/^\[[\w\s/-]+\]\s*/, '').trim();
+
+      // Fallback selectors in case JSON-LD is absent
+      title = title || getTextFromSelectors(['h1[class*="job-title"]', 'h1']);
+      if (!company) {
+        const companyRowEl = document.querySelector('h2[class*="company-row"]');
+        if (companyRowEl) company = companyRowEl.textContent.replace(/\s*·.*$/, '').trim();
+      }
+      if (!location) {
+        const metaItems = Array.from(document.querySelectorAll('[class*="job-metadata-item"]'));
+        location = metaItems.map(el => el.textContent.trim()).filter(Boolean).join(' · ');
+      }
+      description = description || getTextFromSelectors(['[class*="jobDetailContent"]']);
+    }
+
     // ── Generic fallback with multiple strategies ─────────────────────────
     if (!description) {
       description = genericExtractDescription();
@@ -949,7 +978,7 @@
   }
 
   // Job board names that should never be used as the company name
-  const JOB_BOARD_NAMES = /^(linkedin|indeed|glassdoor|ziprecruiter|monster|dice|simplyhired|careerbuilder|naukri|wellfound|angellist)$/i;
+  const JOB_BOARD_NAMES = /^(linkedin|indeed|glassdoor|ziprecruiter|monster|dice|simplyhired|careerbuilder|naukri|wellfound|angellist|jobright)$/i;
 
   function extractCompanyFromDomain() {
     // 1. og:site_name — skip if it's a job board name (e.g. "LinkedIn")
@@ -1036,6 +1065,18 @@
       if (/linkedin\.com\/jobs/i.test(url) && /[?&]currentJobId=\d+/.test(url)) {
         return true;
       }
+      return false;
+    }
+    if (hostname.includes('jobright.ai')) {
+      // Only capture individual job detail pages (/jobs/info/{id}), not search/browse pages
+      return /\/jobs\/info\//i.test(url);
+    }
+    if (hostname.includes('indeed.com')) {
+      // /viewjob?jk=... — standalone job page
+      if (/\/viewjob/i.test(url)) return true;
+      // /jobs?...&vjk=... — search page with a specific job selected in the panel
+      if (/\/jobs\?/.test(url) && /[?&]vjk=/.test(url)) return true;
+      // /rc/clk or /pagead redirect URLs — skip (they navigate away anyway)
       return false;
     }
     return true; // all other known job-site hostnames are fine
