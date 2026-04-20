@@ -3588,12 +3588,20 @@ async function saveJob(data) {
     const norm = normalizeJobUrl(data.url);
     const existing = state.jobs.find(j => j.url && normalizeJobUrl(j.url) === norm);
     if (existing) {
-      // Update stored text if the new capture is longer (e.g. first capture was empty)
-      if (data.text && data.text.length > (existing.text || '').length) {
-        existing.text = data.text;
-        if (data.title)    existing.title    = data.title;
-        if (data.company)  existing.company  = data.company;
-        if (data.location) existing.location = data.location;
+      const newText = data.text || '';
+      const oldText = existing.text || '';
+      const textIsLonger = newText.length > oldText.length;
+      const isBadTitle = !existing.title || existing.title === 'Untitled Job' ||
+        /search all jobs|jobs at linkedin/i.test(existing.title);
+      const isBadCompany = !existing.company || existing.company === 'Unknown Company' || existing.company === '';
+      const isGoodTitle = data.title && data.title !== 'Untitled Job' && !/search all jobs|jobs at linkedin/i.test(data.title);
+      const isGoodCompany = data.company && data.company !== 'Unknown Company' && data.company !== '';
+      let changed = false;
+      if (textIsLonger) { existing.text = newText; changed = true; }
+      if ((textIsLonger || isBadTitle) && isGoodTitle) { existing.title = data.title; changed = true; }
+      if ((textIsLonger || isBadCompany) && isGoodCompany) { existing.company = data.company; changed = true; }
+      if (textIsLonger && data.location) { existing.location = data.location; changed = true; }
+      if (changed) {
         await save(SK.JOBS, state.jobs);
         // Invalidate stale analyses cached against the old (empty) JD text
         const staleKeys = Object.keys(state.analyses).filter(k => k.endsWith('-' + existing.id));
@@ -3601,6 +3609,7 @@ async function saveJob(data) {
           staleKeys.forEach(k => delete state.analyses[k]);
           await save(SK.ANALYSES, state.analyses);
         }
+        renderJobs();
       }
       toast('Already in your library', '', 2500);
       return existing;

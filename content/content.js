@@ -58,6 +58,52 @@
           }
         }
       }
+      // Class-name-independent fallback: find the job detail panel and pick its first h1/h2
+      // (covers new /jobs/search-results/ layout where the old class names don't exist).
+      // Scope to detail container only — scanning the whole document risks grabbing the
+      // sidebar job-card headings or header chrome.
+      if (!title) {
+        try {
+          const detailContainer = document.querySelector(
+            '[class*="jobs-search__job-details"], [class*="job-details-jobs"], [class*="jobs-details"], ' +
+            '.scaffold-layout__detail'
+          );
+          if (detailContainer) {
+            const heading = detailContainer.querySelector('h1, h2');
+            const t = heading && (heading.innerText || '').trim();
+            if (t && t.length > 2 && t.length < 300 &&
+                !/^(notifications?|feed|messaging|jobs in |sign in|join|search all jobs)/i.test(t)) {
+              title = t;
+            }
+          }
+        } catch (_) {}
+      }
+      // Last-ditch: parse the document title. LinkedIn emits these formats:
+      //   "Company hiring Role in Location | LinkedIn"    ← current public pages
+      //   "Role at Company | LinkedIn"                    ← older format
+      //   "(99+) Role — Company | LinkedIn"               ← authenticated SPA on some jobs
+      // Skip the useless generic: "Search all Jobs | LinkedIn"
+      if (!title && document.title) {
+        const dt = document.title.replace(/^\(\d+\+?\)\s*/, '');
+        const isGeneric = /^(search all jobs|jobs at linkedin|linkedin)\b/i.test(dt);
+        if (!isGeneric) {
+          const hiringMatch = dt.match(/^(.+?)\s+hiring\s+(.+?)(?:\s+in\s+[^|\u2013\u2014]+)?\s*[|\u2013\u2014]/i);
+          if (hiringMatch) {
+            title = hiringMatch[2].trim();
+            if (!company) company = hiringMatch[1].trim();
+          } else {
+            const atMatch = dt.match(/^(.+?)\s+at\s+(.+?)\s*[|\u2013\u2014]/);
+            if (atMatch) {
+              title = atMatch[1].trim();
+              if (!company) company = atMatch[2].trim();
+            } else {
+              // Plain "Role | LinkedIn" or "Role — Company | LinkedIn"
+              const parts = dt.split(/\s*[|\u2013\u2014]\s*/);
+              if (parts.length >= 2 && parts[0].trim().length > 3) title = parts[0].trim();
+            }
+          }
+        }
+      }
 
       // ── Company extraction: class-name selectors (quick attempt) ──────────
       // Use direct querySelector with length > 1 since company names can be very short.
@@ -136,7 +182,7 @@
 
       // ── Page title "at Company" regex ─────────────────────────────────────
       if (!company) {
-        const atMatch = document.title.replace(/^\(\d+\)\s*/, '').match(/\bat\s+(.+?)\s*[|\u2013\u2014]/);
+        const atMatch = document.title.replace(/^\(\d+\+?\)\s*/, '').match(/\bat\s+(.+?)\s*[|\u2013\u2014]/);
         if (atMatch) {
           const extracted = atMatch[1].trim();
           if (extracted !== 'LinkedIn') company = extracted;
@@ -1329,8 +1375,11 @@
   // includes JSON-LD structured data regardless of client-side DOM state).
   async function fetchLinkedInJob(jobId) {
     try {
+      // credentials:'omit' forces LinkedIn to return the public guest-SSR job page
+      // (og tags, .topcard__title, .description__text). With 'include', the server
+      // returns a client-rendered SPA shell for authenticated users — no content.
       const resp = await fetch(`https://www.linkedin.com/jobs/view/${jobId}/`, {
-        credentials: 'include',
+        credentials: 'omit',
         headers: { 'Accept': 'text/html,application/xhtml+xml', 'Accept-Language': 'en-US,en;q=0.9' }
       });
       if (!resp.ok) return null;
@@ -1357,9 +1406,14 @@
       // (JSON-LD often has the title but omits hiringOrganization.name for small companies)
       if (!title || !company) {
         const ogTitle = doc.querySelector('meta[property="og:title"]')?.getAttribute('content') || '';
-        // Pattern: "Job Title at Company Name | LinkedIn"
+        // Pattern A (current LinkedIn public pages): "Company hiring Role in Location | LinkedIn"
+        const hiringMatch = ogTitle.match(/^(.+?)\s+hiring\s+(.+?)(?:\s+in\s+[^|\u2013\u2014]+)?\s*[|\u2013\u2014]/i);
+        // Pattern B (older LinkedIn / other sites): "Job Title at Company Name | LinkedIn"
         const atMatch = ogTitle.match(/^(.+?)\s+at\s+(.+?)\s*[|\u2013\u2014]/);
-        if (atMatch) {
+        if (hiringMatch) {
+          if (!company) company = hiringMatch[1].trim();
+          if (!title)   title   = hiringMatch[2].trim();
+        } else if (atMatch) {
           if (!title)   title   = atMatch[1].trim();
           if (!company) company = atMatch[2].trim();
         } else if (ogTitle && !title) {
@@ -1373,14 +1427,23 @@
         }
       }
 
-      // Strategy 3: Page title fallback for title; also try "at Company" for company
-      if (!title && doc.title) {
-        const parts = doc.title.split(/\s*[|\u2013\u2014]\s*/);
-        if (parts.length >= 2 && parts[0].trim().length > 3) title = parts[0].trim();
-      }
-      if (!company && doc.title) {
-        const atMatch = doc.title.replace(/^\(\d+\)\s*/, '').match(/\bat\s+(.+?)\s*[|\u2013\u2014]/);
-        if (atMatch && atMatch[1].trim() !== 'LinkedIn') company = atMatch[1].trim();
+      // Strategy 3: Page <title> fallback — try hiring pattern first, then "at Company", then naive split
+      if ((!title || !company) && doc.title) {
+        const dt = doc.title.replace(/^\(\d+\+?\)\s*/, '');
+        const hiringMatch = dt.match(/^(.+?)\s+hiring\s+(.+?)(?:\s+in\s+[^|\u2013\u2014]+)?\s*[|\u2013\u2014]/i);
+        if (hiringMatch) {
+          if (!company) company = hiringMatch[1].trim();
+          if (!title)   title   = hiringMatch[2].trim();
+        } else {
+          const atMatch = dt.match(/^(.+?)\s+at\s+(.+?)\s*[|\u2013\u2014]/);
+          if (atMatch && atMatch[2].trim() !== 'LinkedIn') {
+            if (!title)   title   = atMatch[1].trim();
+            if (!company) company = atMatch[2].trim();
+          } else if (!title) {
+            const parts = dt.split(/\s*[|\u2013\u2014]\s*/);
+            if (parts.length >= 2 && parts[0].trim().length > 3) title = parts[0].trim();
+          }
+        }
       }
 
       // Strategy 4: Standard HTML selectors on fetched page (textContent works on DOMParser docs)
