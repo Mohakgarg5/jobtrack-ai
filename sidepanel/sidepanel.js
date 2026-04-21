@@ -155,16 +155,44 @@ function syncActiveProfileToState() {
 
 function renderProfileBar() {
   const bar = document.getElementById('profileBar');
-  if (state.profiles.length <= 1) { bar.classList.add('hidden'); return; }
+  if (state.profiles.length === 0) { bar.classList.add('hidden'); return; }
   bar.classList.remove('hidden');
   const showDelete = state.profiles.length > 1;
-  document.getElementById('profileTabs').innerHTML = state.profiles.map(p =>
+  const tabs = state.profiles.map(p =>
     `<button class="profile-tab-btn${p.id === state.activeProfileId ? ' active' : ''}"
              data-action="switch-profile" data-profile-id="${p.id}">
        <span class="profile-tab-label">${escHtml(p.displayName)}</span>
        ${showDelete ? `<span class="profile-tab-delete" data-action="delete-profile" data-profile-id="${p.id}" title="Delete profile">×</span>` : ''}
      </button>`
   ).join('');
+  const addBtn = `<button class="profile-tab-add" data-action="add-profile" title="Add profile">+</button>`;
+  document.getElementById('profileTabs').innerHTML = tabs + addBtn;
+}
+
+async function addNewProfile() {
+  const nextNumber = state.profiles.length + 1;
+  const displayName = 'Profile ' + nextNumber;
+  const newP = {
+    id: 'profile_' + Date.now(), displayName,
+    firstName: '', lastName: '', email: '', phone: '',
+    linkedin: '', github: '', portfolio: '',
+    city: '', state: '', country: '', zipCode: '',
+    salary: '', availability: '',
+    whyThisRole: '', aboutMe: '', strength: '', weakness: '', coverLetter: '',
+    resumes: [], coverLetters: []
+  };
+  state.profiles.push(newP);
+  state.activeProfileId = newP.id;
+  await chrome.storage.local.set({ [SK.PROFILES]: state.profiles, [SK.ACTIVE_PROFILE]: newP.id });
+  syncActiveProfileToState();
+  renderProfileBar();
+  switchTab('settings');
+  const nameInput = document.getElementById('pDisplayName');
+  if (nameInput) {
+    nameInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    nameInput.focus({ preventScroll: true });
+  }
+  toast(`${displayName} created! Fill in the details below and save.`, 'success', 4000);
 }
 
 async function switchActiveProfile(profileId) {
@@ -3382,26 +3410,7 @@ function wireEvents() {
     toast('Profile & answers saved! ✓', 'success');
   });
 
-  document.getElementById('btnAddProfile').addEventListener('click', async () => {
-    const nextNumber = state.profiles.length + 1;
-    const displayName = 'Profile ' + nextNumber;
-    const newP = {
-      id: 'profile_' + Date.now(), displayName,
-      firstName: '', lastName: '', email: '', phone: '',
-      linkedin: '', github: '', portfolio: '',
-      city: '', state: '', country: '', zipCode: '',
-      salary: '', availability: '',
-      whyThisRole: '', aboutMe: '', strength: '', weakness: '', coverLetter: '',
-      resumes: [], coverLetters: []
-    };
-    state.profiles.push(newP);
-    state.activeProfileId = newP.id;
-    await chrome.storage.local.set({ [SK.PROFILES]: state.profiles, [SK.ACTIVE_PROFILE]: newP.id });
-    syncActiveProfileToState();
-    renderProfileBar();
-    renderSettings();
-    toast(`${displayName} created! Fill in the details below and save.`, 'success', 4000);
-  });
+  document.getElementById('btnAddProfile').addEventListener('click', addNewProfile);
 
   document.getElementById('btnExportData').addEventListener('click', exportData);
 
@@ -3491,7 +3500,8 @@ function wireEvents() {
     if (!el) return;
     const action = el.dataset.action;
     const id = el.dataset.profileId;
-    if (action === 'delete-profile') deleteProfile(id);
+    if (action === 'add-profile') addNewProfile();
+    else if (action === 'delete-profile') deleteProfile(id);
     else if (action === 'switch-profile') switchActiveProfile(id);
   });
 

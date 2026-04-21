@@ -1456,3 +1456,17 @@ body {
 }
 .profile-tab-btn.active .profile-tab-delete { color: white; }
 .profile-tab-btn.active .profile-tab-delete:hover { background: rgba(255,255,255,0.25); color: white; }
+
+.profile-tab-add {
+  padding: 3px 10px;
+  border-radius: 20px;
+  border: 1.5px dashed #a5b4fc;
+  background: transparent;
+  color: var(--primary);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.profile-tab-add:hover { background: #e0e7ff; border-style: solid; }
