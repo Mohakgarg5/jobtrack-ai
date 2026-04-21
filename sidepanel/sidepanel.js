@@ -191,6 +191,59 @@ async function switchActiveProfile(profileId) {
   toast(`Switched to ${escHtml(p.displayName)}`, 'success', 2000);
 }
 
+async function deleteProfile(profileId) {
+  if (state.profiles.length <= 1) {
+    toast("Can't delete the last profile", 'error', 2000);
+    return;
+  }
+  const idx = state.profiles.findIndex(x => x.id === profileId);
+  if (idx === -1) return;
+  const target = state.profiles[idx];
+
+  if (!confirm(`Delete "${target.displayName}"? Its resumes and cover letters will be removed. Applications will be kept but no longer tagged to this profile.`)) return;
+
+  const deletedResumeIds = (target.resumes || []).map(r => r.id);
+
+  state.profiles.splice(idx, 1);
+
+  // Un-tag applications so they survive and appear on all remaining profiles
+  // (matches the legacy `!a.profileId` path used by activeApps()).
+  let appsChanged = false;
+  state.applications.forEach(a => {
+    if (a.profileId === profileId) { a.profileId = ''; appsChanged = true; }
+  });
+
+  // Drop orphaned analyses keyed `{resumeId}-{jobId}` for deleted resumes.
+  let analysesChanged = false;
+  if (deletedResumeIds.length) {
+    const dropSet = new Set(deletedResumeIds);
+    Object.keys(state.analyses).forEach(key => {
+      const resumeId = key.split('-')[0];
+      if (dropSet.has(resumeId)) { delete state.analyses[key]; analysesChanged = true; }
+    });
+  }
+
+  const activeChanged = state.activeProfileId === profileId;
+  if (activeChanged) state.activeProfileId = state.profiles[0].id;
+
+  await save(SK.PROFILES, state.profiles);
+  if (activeChanged)   await save(SK.ACTIVE_PROFILE, state.activeProfileId);
+  if (appsChanged)     await save(SK.APPLICATIONS, state.applications);
+  if (analysesChanged) await save(SK.ANALYSES, state.analyses);
+
+  if (activeChanged) syncActiveProfileToState();
+  renderProfileBar();
+  renderDashboard();
+  const t = state.activeTab;
+  if (t === 'resumes')  renderResumes();
+  if (t === 'tracker')  renderTracker();
+  if (t === 'jobs')     renderJobs();
+  if (t === 'analyze')  renderAnalyze();
+  if (t === 'settings') renderSettings();
+
+  toast(`${target.displayName} deleted`, 'success', 2500);
+}
+
 // ── Toast ─────────────────────────────────────────────────────────────
 let toastTimer;
 function toast(msg, type = '', duration = 3000) {
