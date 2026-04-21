@@ -1431,3 +1431,28 @@ body {
   color: white;
   font-weight: 600;
 }
+
+/* ── Profile tab delete affordance ──────────────────────────── */
+.profile-tab-btn { display: inline-flex; align-items: center; gap: 6px; }
+.profile-tab-label { line-height: 1; }
+.profile-tab-delete {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  font-size: 12px;
+  line-height: 1;
+  color: inherit;
+  opacity: 0.55;
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s, color 0.15s;
+}
+.profile-tab-delete:hover {
+  background: rgba(220, 38, 38, 0.15);
+  color: #dc2626;
+  opacity: 1;
+}
+.profile-tab-btn.active .profile-tab-delete { color: white; }
+.profile-tab-btn.active .profile-tab-delete:hover { background: rgba(255,255,255,0.25); color: white; }

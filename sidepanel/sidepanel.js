@@ -157,10 +157,12 @@ function renderProfileBar() {
   const bar = document.getElementById('profileBar');
   if (state.profiles.length <= 1) { bar.classList.add('hidden'); return; }
   bar.classList.remove('hidden');
+  const showDelete = state.profiles.length > 1;
   document.getElementById('profileTabs').innerHTML = state.profiles.map(p =>
     `<button class="profile-tab-btn${p.id === state.activeProfileId ? ' active' : ''}"
              data-action="switch-profile" data-profile-id="${p.id}">
-       ${escHtml(p.displayName)}
+       <span class="profile-tab-label">${escHtml(p.displayName)}</span>
+       ${showDelete ? `<span class="profile-tab-delete" data-action="delete-profile" data-profile-id="${p.id}" title="Delete profile">×</span>` : ''}
      </button>`
   ).join('');
 }
