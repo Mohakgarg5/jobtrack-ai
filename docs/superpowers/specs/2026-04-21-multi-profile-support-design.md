@@ -16,8 +16,8 @@ The app already migrated to an array-based `state.profiles` model and renders a 
 
 - `state.profiles: Profile[]` persisted under `SK.PROFILES = 'jt_profiles'`.
 - `state.activeProfileId: string` persisted under `SK.ACTIVE_PROFILE = 'jt_active_profile_id'`.
-- Each `Profile` carries its own `resumes`, contact fields, pre-answers, and `coverLetter` (pre-answer blob).
-- Global (not per-profile) stores: `state.jobs`, `state.applications`, `state.coverLetters`, `state.analyses`.
+- Each `Profile` carries its own `resumes`, `coverLetters`, contact fields, pre-answers, and `coverLetter` (pre-answer blob).
+- Global (not per-profile) stores: `state.jobs`, `state.applications`, `state.analyses`.
 - `activeApps()` filters applications by `profileId`, treating a missing/empty `profileId` as "visible on all profiles" (legacy backward-compat path).
 - `renderProfileBar()` hides the bar when `profiles.length <= 1`.
 - `btnAddProfile` handler at `sidepanel.js:~3325` hard-caps at 2 profiles and names the new profile `'Profile 2'`.
@@ -99,8 +99,7 @@ Behavior:
 - `SK.ACTIVE_PROFILE` (`jt_active_profile_id`) — updated only if the deleted profile was active.
 - `SK.APPLICATIONS` (`jt_applications`) — updated only if any app had the deleted `profileId`.
 - `SK.ANALYSES` (`jt_analyses`) — updated only if any analysis keyed off the deleted profile's resumes.
-- `SK.COVER_LETTERS` (`jt_cover_letters`) / `state.coverLetters` — **untouched**. This list is already global (not profile-scoped), and pulling in that scope change widens this spec unnecessarily.
-- The profile's own embedded `coverLetter` pre-answer goes away with the profile object itself.
+- Per-profile `coverLetters` array and the profile's embedded `coverLetter` pre-answer go away automatically when the profile object is removed from `state.profiles`. No separate cleanup required.
 
 ### 5. Files touched
 
