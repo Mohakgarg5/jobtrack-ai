@@ -1414,6 +1414,9 @@ body {
 }
 .profile-tabs-row { display: flex; gap: 6px; }
 .profile-tab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   padding: 3px 12px;
   border-radius: 20px;
   border: 1.5px solid #a5b4fc;
@@ -1433,7 +1436,6 @@ body {
 }
 
 /* ── Profile tab delete affordance ──────────────────────────── */
-.profile-tab-btn { display: inline-flex; align-items: center; gap: 6px; }
 .profile-tab-label { line-height: 1; }
 .profile-tab-delete {
   display: inline-flex;

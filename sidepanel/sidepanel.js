@@ -186,6 +186,7 @@ async function addNewProfile() {
   await chrome.storage.local.set({ [SK.PROFILES]: state.profiles, [SK.ACTIVE_PROFILE]: newP.id });
   syncActiveProfileToState();
   renderProfileBar();
+  renderDashboard();
   switchTab('settings');
   const nameInput = document.getElementById('pDisplayName');
   if (nameInput) {
@@ -3136,7 +3137,7 @@ function renderSettings() {
   const pDN = document.getElementById('pDisplayName');
   if (pDN) pDN.value = activeP.displayName || '';
   const addBtn = document.getElementById('btnAddProfile');
-  if (addBtn) addBtn.style.display = state.profiles.length >= 2 ? 'none' : '';
+  if (addBtn) addBtn.style.display = '';
 
   document.getElementById('apiKeyInput').value    = apiKey   || '';
   document.getElementById('providerSelect').value = provider || 'gemini';
