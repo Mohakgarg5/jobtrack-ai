@@ -3323,15 +3323,16 @@ function wireEvents() {
   });
 
   document.getElementById('btnAddProfile').addEventListener('click', async () => {
-    if (state.profiles.length >= 2) { toast('Maximum 2 profiles supported', 'error', 2000); return; }
+    const nextNumber = state.profiles.length + 1;
+    const displayName = 'Profile ' + nextNumber;
     const newP = {
-      id: 'profile_' + Date.now(), displayName: 'Profile 2',
+      id: 'profile_' + Date.now(), displayName,
       firstName: '', lastName: '', email: '', phone: '',
       linkedin: '', github: '', portfolio: '',
       city: '', state: '', country: '', zipCode: '',
       salary: '', availability: '',
       whyThisRole: '', aboutMe: '', strength: '', weakness: '', coverLetter: '',
-      resumes: []
+      resumes: [], coverLetters: []
     };
     state.profiles.push(newP);
     state.activeProfileId = newP.id;
@@ -3339,7 +3340,7 @@ function wireEvents() {
     syncActiveProfileToState();
     renderProfileBar();
     renderSettings();
-    toast('Profile 2 created! Fill in the details below and save.', 'success', 4000);
+    toast(`${displayName} created! Fill in the details below and save.`, 'success', 4000);
   });
 
   document.getElementById('btnExportData').addEventListener('click', exportData);
