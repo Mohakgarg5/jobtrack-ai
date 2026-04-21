@@ -238,7 +238,12 @@ async function deleteProfile(profileId) {
   if (t === 'resumes')  renderResumes();
   if (t === 'tracker')  renderTracker();
   if (t === 'jobs')     renderJobs();
-  if (t === 'analyze')  renderAnalyze();
+  if (t === 'analyze')  {
+    renderAnalyze();
+    document.getElementById('localMatchSection')?.classList.add('hidden');
+    document.getElementById('analyzeResults')?.classList.add('hidden');
+    document.getElementById('analyzeLoading')?.classList.add('hidden');
+  }
   if (t === 'settings') renderSettings();
 
   toast(`${target.displayName} deleted`, 'success', 2500);
@@ -3480,10 +3485,14 @@ function wireEvents() {
     if (action === 'delete-app')    window.deleteApp(id);
   });
 
-  // Profile bar switching
+  // Profile bar: switch or delete based on which element was clicked
   document.getElementById('profileBar').addEventListener('click', (e) => {
-    const btn = e.target.closest('[data-action="switch-profile"]');
-    if (btn) switchActiveProfile(btn.dataset.profileId);
+    const el = e.target.closest('[data-action]');
+    if (!el) return;
+    const action = el.dataset.action;
+    const id = el.dataset.profileId;
+    if (action === 'delete-profile') deleteProfile(id);
+    else if (action === 'switch-profile') switchActiveProfile(id);
   });
 
   // Modal (for Add Note, confirm-mark-applied, confirm-resume-for-app)
