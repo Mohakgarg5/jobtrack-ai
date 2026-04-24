@@ -49,27 +49,47 @@ async function autoSaveJD(jdData, tab) {
 
   if (alreadySaved) {
     const existing = jobs.find(j => normalizeJobUrl(j.url) === norm);
-    // Update description if the freshly-captured one is longer (first capture may
-    // have fired before LinkedIn finished rendering the job-details panel)
+    // Independent per-field upgrade logic. Each field only accepts a new value
+    // if (a) the new value is valid AND (b) the old value is either missing/junk
+    // or, for description, shorter than the new. Tying fields together (the old
+    // approach) meant a bad-title re-capture could overwrite a good description
+    // with shorter junk, and a bad-company re-capture couldn't fix the company
+    // unless the description also grew.
+    const GENERIC_TITLE = /search all jobs|jobs at linkedin/i;
     const newDescLen = (jdData.description || '').length;
     const oldDescLen = (existing.text || '').length;
-    if (newDescLen > oldDescLen) {
+    const isBadTitle = !existing.title || existing.title === 'Untitled Job' || GENERIC_TITLE.test(existing.title);
+    const isBadCompany = !existing.company || existing.company === 'Unknown Company' || existing.company === '';
+    const newTitleGood = jdData.title && jdData.title !== 'Untitled Job' && !GENERIC_TITLE.test(jdData.title);
+    const newCompanyGood = jdData.company && jdData.company !== 'Unknown Company' && jdData.company !== '';
+
+    let textChanged = false;
+    let anyChanged = false;
+    if (newDescLen > oldDescLen && jdData.description) {
       existing.text = jdData.description;
-      if (jdData.title)    existing.title   = jdData.title;
-      if (jdData.company)  existing.company = jdData.company;
-      if (jdData.location) existing.location = jdData.location;
+      textChanged = true;
+      anyChanged = true;
+    }
+    if (isBadTitle && newTitleGood) { existing.title = jdData.title; anyChanged = true; }
+    if (isBadCompany && newCompanyGood) { existing.company = jdData.company; anyChanged = true; }
+    if (jdData.location && !existing.location) { existing.location = jdData.location; anyChanged = true; }
+
+    if (anyChanged) {
       await chrome.storage.local.set({ [JT_JOBS_KEY]: jobs });
-      // Invalidate stale analyses that were cached with the old (empty) JD text
-      const analysesStore = await chrome.storage.local.get('jt_analyses');
-      const analyses = analysesStore['jt_analyses'] || {};
-      const staleKeys = Object.keys(analyses).filter(k => k.endsWith('-' + existing.id));
-      if (staleKeys.length) {
-        staleKeys.forEach(k => delete analyses[k]);
-        await chrome.storage.local.set({ jt_analyses: analyses });
+      // Only invalidate cached analyses when the JD text itself changed —
+      // title/company upgrades don't affect keyword/match analysis.
+      if (textChanged) {
+        const analysesStore = await chrome.storage.local.get('jt_analyses');
+        const analyses = analysesStore['jt_analyses'] || {};
+        const staleKeys = Object.keys(analyses).filter(k => k.endsWith('-' + existing.id));
+        if (staleKeys.length) {
+          staleKeys.forEach(k => delete analyses[k]);
+          await chrome.storage.local.set({ jt_analyses: analyses });
+        }
       }
       safeNotify({ type: 'JD_AUTO_SAVED', jobId: existing.id, job: existing, isNew: false });
     }
-    setBadge(tab.id, '✓', '#059669');
+    if (tab && tab.id != null) setBadge(tab.id, '✓', '#059669');
     return;
   }
 
@@ -152,36 +172,61 @@ function setBadge(tabId, text, color) {
   chrome.action.setBadgeBackgroundColor({ color, tabId }).catch(() => {});
 }
 
-// Clear badge when user leaves a job page
-chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+// ── LinkedIn auto-capture ─────────────────────────────────────────────────────
+// Two listeners feed into triggerLinkedInCapture:
+//   1. tabs.onUpdated — full page loads (user pastes URL, opens new tab)
+//   2. webNavigation.onHistoryStateUpdated — SPA pushState (user clicks job card)
+// Both fire for a single SPA navigation on Chrome MV3, so we dedupe per
+// (tabId + currentJobId) with an in-flight map to avoid duplicate saves.
+const _jtInFlight = new Map(); // key: `${tabId}:${currentJobId}` → expiry ts
+
+function _jtInFlightKey(tabId, url) {
+  const m = /[?&]currentJobId=(\d+)/.exec(url);
+  return m ? `${tabId}:${m[1]}` : null;
+}
+
+async function triggerLinkedInCapture(tabId, url) {
+  const key = _jtInFlightKey(tabId, url);
+  if (!key) return; // no currentJobId = nothing to capture
+  const now = Date.now();
+  const expiry = _jtInFlight.get(key);
+  if (expiry && expiry > now) return;
+  _jtInFlight.set(key, now + 12000); // 12s debounce window
+
+  const isSlowPage = url.includes('f_C=') || url.includes('originToLandingJobPostings=') || url.includes('f_E=');
+  const waitMs = isSlowPage ? 6000 : 3500;
+  await new Promise(r => setTimeout(r, waitMs));
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['content/content.js'] }).catch(() => {});
+    const response = await chrome.tabs.sendMessage(tabId, { type: 'CAPTURE_JD' });
+    if (response?.success && response.data?.description?.length > 50) {
+      await autoSaveJD(response.data, { id: tabId, url });
+    }
+  } catch (_) {}
+}
+
+// Sweep expired entries periodically so the map doesn't grow unbounded
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, exp] of _jtInFlight) if (exp <= now) _jtInFlight.delete(k);
+}, 60000);
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status === 'loading') {
     chrome.action.setBadgeText({ text: '', tabId }).catch(() => {});
+    return;
+  }
+  if (changeInfo.status === 'complete') {
+    const url = tab.url || '';
+    if (url.includes('linkedin.com/jobs') && url.includes('currentJobId=')) {
+      triggerLinkedInCapture(tabId, url);
+    }
   }
 });
 
-// ── Auto-capture on SPA navigation (LinkedIn search/collections) ──────────────
-// webNavigation.onHistoryStateUpdated fires for every history.pushState call,
-// making it far more reliable than MutationObserver in the content script.
-chrome.webNavigation.onHistoryStateUpdated.addListener(async (details) => {
+chrome.webNavigation.onHistoryStateUpdated.addListener((details) => {
   const url = details.url || '';
-  // Only act on LinkedIn job pages with a specific job selected
   if (!url.includes('linkedin.com/jobs')) return;
   if (!url.includes('currentJobId=')) return;
-
-  const tabId = details.tabId;
-
-  // Wait for the job panel content to render
-  setTimeout(async () => {
-    try {
-      await chrome.scripting.executeScript({
-        target: { tabId },
-        files: ['content/content.js']
-      }).catch(() => {});
-
-      const response = await chrome.tabs.sendMessage(tabId, { type: 'CAPTURE_JD' });
-      if (response?.success && response.data?.description?.length > 50) {
-        await autoSaveJD(response.data, { id: tabId, url });
-      }
-    } catch (_) {}
-  }, 3500);
+  triggerLinkedInCapture(details.tabId, url);
 });

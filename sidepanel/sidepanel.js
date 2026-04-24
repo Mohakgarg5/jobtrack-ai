@@ -155,14 +155,45 @@ function syncActiveProfileToState() {
 
 function renderProfileBar() {
   const bar = document.getElementById('profileBar');
-  if (state.profiles.length <= 1) { bar.classList.add('hidden'); return; }
+  if (state.profiles.length === 0) { bar.classList.add('hidden'); return; }
   bar.classList.remove('hidden');
-  document.getElementById('profileTabs').innerHTML = state.profiles.map(p =>
+  const showDelete = state.profiles.length > 1;
+  const tabs = state.profiles.map(p =>
     `<button class="profile-tab-btn${p.id === state.activeProfileId ? ' active' : ''}"
              data-action="switch-profile" data-profile-id="${p.id}">
-       ${escHtml(p.displayName)}
+       <span class="profile-tab-label">${escHtml(p.displayName)}</span>
+       ${showDelete ? `<span class="profile-tab-delete" data-action="delete-profile" data-profile-id="${p.id}" title="Delete profile">×</span>` : ''}
      </button>`
   ).join('');
+  const addBtn = `<button class="profile-tab-add" data-action="add-profile" title="Add profile">+</button>`;
+  document.getElementById('profileTabs').innerHTML = tabs + addBtn;
+}
+
+async function addNewProfile() {
+  const nextNumber = state.profiles.length + 1;
+  const displayName = 'Profile ' + nextNumber;
+  const newP = {
+    id: 'profile_' + Date.now(), displayName,
+    firstName: '', lastName: '', email: '', phone: '',
+    linkedin: '', github: '', portfolio: '',
+    city: '', state: '', country: '', zipCode: '',
+    salary: '', availability: '',
+    whyThisRole: '', aboutMe: '', strength: '', weakness: '', coverLetter: '',
+    resumes: [], coverLetters: []
+  };
+  state.profiles.push(newP);
+  state.activeProfileId = newP.id;
+  await chrome.storage.local.set({ [SK.PROFILES]: state.profiles, [SK.ACTIVE_PROFILE]: newP.id });
+  syncActiveProfileToState();
+  renderProfileBar();
+  renderDashboard();
+  switchTab('settings');
+  const nameInput = document.getElementById('pDisplayName');
+  if (nameInput) {
+    nameInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    nameInput.focus({ preventScroll: true });
+  }
+  toast(`${displayName} created! Fill in the details below and save.`, 'success', 4000);
 }
 
 async function switchActiveProfile(profileId) {
@@ -187,6 +218,64 @@ async function switchActiveProfile(profileId) {
   }
   if (t === 'settings') renderSettings();
   toast(`Switched to ${escHtml(p.displayName)}`, 'success', 2000);
+}
+
+async function deleteProfile(profileId) {
+  if (state.profiles.length <= 1) {
+    toast("Can't delete the last profile", 'error', 2000);
+    return;
+  }
+  const idx = state.profiles.findIndex(x => x.id === profileId);
+  if (idx === -1) return;
+  const target = state.profiles[idx];
+
+  if (!confirm(`Delete "${target.displayName}"? Its resumes and cover letters will be removed. Applications will be kept but no longer tagged to this profile.`)) return;
+
+  const deletedResumeIds = (target.resumes || []).map(r => r.id);
+
+  state.profiles.splice(idx, 1);
+
+  // Un-tag applications so they survive and appear on all remaining profiles
+  // (matches the legacy `!a.profileId` path used by activeApps()).
+  let appsChanged = false;
+  state.applications.forEach(a => {
+    if (a.profileId === profileId) { a.profileId = ''; appsChanged = true; }
+  });
+
+  // Drop orphaned analyses keyed `{resumeId}-{jobId}` for deleted resumes.
+  let analysesChanged = false;
+  if (deletedResumeIds.length) {
+    const dropSet = new Set(deletedResumeIds);
+    Object.keys(state.analyses).forEach(key => {
+      const resumeId = key.split('-')[0];
+      if (dropSet.has(resumeId)) { delete state.analyses[key]; analysesChanged = true; }
+    });
+  }
+
+  const activeChanged = state.activeProfileId === profileId;
+  if (activeChanged) state.activeProfileId = state.profiles[0].id;
+
+  await save(SK.PROFILES, state.profiles);
+  if (activeChanged)   await save(SK.ACTIVE_PROFILE, state.activeProfileId);
+  if (appsChanged)     await save(SK.APPLICATIONS, state.applications);
+  if (analysesChanged) await save(SK.ANALYSES, state.analyses);
+
+  if (activeChanged) syncActiveProfileToState();
+  renderProfileBar();
+  renderDashboard();
+  const t = state.activeTab;
+  if (t === 'resumes')  renderResumes();
+  if (t === 'tracker')  renderTracker();
+  if (t === 'jobs')     renderJobs();
+  if (t === 'analyze')  {
+    renderAnalyze();
+    document.getElementById('localMatchSection')?.classList.add('hidden');
+    document.getElementById('analyzeResults')?.classList.add('hidden');
+    document.getElementById('analyzeLoading')?.classList.add('hidden');
+  }
+  if (t === 'settings') renderSettings();
+
+  toast(`${target.displayName} deleted`, 'success', 2500);
 }
 
 // ── Toast ─────────────────────────────────────────────────────────────
@@ -391,7 +480,14 @@ const ROLE_TAXONOMY = {
       'product manager','product owner','head of product','director of product',
       'vp of product','vp product','chief product officer','cpo',
       'group product manager','senior product manager','associate product manager',
-      'apm','product lead','product management lead'
+      'apm','product lead','product management lead',
+      'growth product manager','growth pm','product strategist','product analyst',
+      'product operations manager','product ops','product specialist',
+      'digital product manager','consumer product manager','b2b product manager',
+      'platform product manager','mobile product manager','ai product manager',
+      'technical product manager','product manager intern','pm intern',
+      'product intern','product management intern','product management associate',
+      'associate pm','junior product manager','junior pm','product consultant'
     ],
     distinctive: [
       'product roadmap','product strategy','product vision','product discovery',
@@ -963,22 +1059,67 @@ async function generateCoverLetter(resume, job) {
   const resumeSnip = resume.text.slice(0, 6000);
   const jdSnip     = job.text.slice(0, 6000);
 
-  const system = `You are an expert cover letter writer. Write professional,
-concise cover letters (3 short paragraphs, ~250 words) tailored to the specific job.
-Use a warm but professional tone. Do NOT use placeholders like [Your Name] –
-infer the person's name from the resume if possible, otherwise omit it.`;
+  const system = `You are ghostwriting a cover letter for a real person. It must read like a human wrote it after spending hours researching the company, not like a template. The letter's job is to make the hiring manager think: "this person already understands our problem and has actually solved something close to it before."
 
-  const user = `Write a tailored cover letter for this applicant.
+The letter works when it does three things well:
+1. Shows the candidate understands the company's specific situation, not just the industry in general.
+2. Proves with real numbers that the candidate has solved problems similar to what this company faces right now.
+3. Makes it obvious why this company specifically, not just any company with a similar role.
+
+Writing style rules (non-negotiable):
+- Sounds like a confident, thoughtful person. Not a press release. Not a LinkedIn post.
+- Short punchy sentences mixed with longer ones. Never three long sentences in a row.
+- Uses "I" naturally. Never starts with "I" though.
+- Never over-explains. Never pads. Every sentence earns its place.
+- No em dashes anywhere. Use a comma or period instead. This is absolute.
+- No markdown, no bullets, no asterisks, no headers.
+- No salutation, no sign-off. Body only.
+- No placeholders. Write around anything missing using real context.
+- Banned words and phrases: "excited", "passionate", "perfect fit", "great addition", "look forward", "dynamic", "fast-paced", "proven track record", "leverage", "synergy", "utilize", "deliverables", "Furthermore", "Moreover", "In conclusion", "It is worth noting", "I cannot write", "job description is incomplete".
+- Always produce the letter immediately regardless of how sparse the JD is. Use general knowledge about the company and role type to fill gaps.`;
+
+  const user = `Write a cover letter body for this candidate applying to ${job.title} at ${job.company}.
 
 RESUME:
 ${resumeSnip}
 
-JOB (${job.title} at ${job.company}):
+JOB DESCRIPTION:
 ${jdSnip}
 
-Write the cover letter body only (no address headers, no "Dear Hiring Manager" line needed).`;
+Before writing, think through this silently. Do not output any of this reasoning:
 
-  return callAI(user, system);
+COMPANY RESEARCH ANGLE:
+What does ${job.company} actually do and where are they in their market right now? What pressure or opportunity is making them hire for ${job.title} at this moment? What would a person who has been following this company for a year know about them that a lazy applicant would not? Use the JD signals plus everything you know about this company. If the JD is sparse, lean harder on your knowledge of the company.
+
+THE CORE PROBLEM THIS ROLE SOLVES:
+What is the specific operational or strategic problem ${job.company} is trying to fix by filling this role? Not a generic "they need someone to do X" but the actual business pain: are they scaling and losing coordination? Losing customers they should retain? Building something new and need someone who has shipped before? Get specific.
+
+THE CANDIDATE'S STRONGEST MATCH:
+Which 2-3 achievements from the resume directly map to that core problem? What are the real numbers? What was the outcome that the company actually cared about? Which of these makes the candidate genuinely different from other applicants?
+
+Now write exactly 4 paragraphs. Total: 290-320 words. Count and verify before outputting.
+
+Paragraph 1 (55-65 words):
+Open with a sharp, specific insight about ${job.company} that shows the candidate has done real homework. Not "I read your website." Something that demonstrates understanding of their business situation, competitive position, or the tension this role is meant to resolve. Connect it immediately to why this candidate is the right person for this problem. Do not start with "I."
+
+Paragraph 2 (85-95 words):
+Two or three achievements from the resume with exact numbers and outcomes. For every achievement, follow it immediately with why that matters to ${job.company} specifically. The sentence structure should feel like: here is what I did, and here is what that means for the problem you are trying to solve. Mirror language from the JD where it fits naturally. Make the connection impossible to miss.
+
+Paragraph 3 (80-90 words):
+Go one level deeper on the role. Pick the one or two things in the JD that most applicants would gloss over, and show how the candidate's specific experience speaks to those directly. This could be a technical requirement, a cross-functional challenge, a stage-of-company fit, or a nuance in what the team actually needs. The candidate should sound like they have already thought about what day one in this role looks like.
+
+Paragraph 4 (55-65 words):
+What will the candidate actually build or fix at ${job.company} in the first year, based on evidence from their track record. Then one honest, specific sentence about why this company and not a competitor. Make it feel like the candidate chose ${job.company} for a real reason, not just because they are hiring.
+
+No em dashes anywhere. Human voice. 290-320 words total. Output only the 4 paragraphs. Nothing else.`;
+
+  const raw = await callAI(user, system);
+  // Strip em dashes (—), en dashes (–), and their HTML entities
+  return raw
+    .replace(/\s*[\u2014\u2015\u2012]\s*/g, ', ')  // em dash variants
+    .replace(/\u2013/g, '-')                         // en dash
+    .replace(/&mdash;/g, ', ')
+    .replace(/&ndash;/g, '-');
 }
 
 async function generateInterviewPrep(resume, job) {
@@ -1385,6 +1526,7 @@ function renderCoverLetters() {
       <div class="card-actions">
         <button class="btn-link" data-action="view-cl" data-id="${cl.id}">View</button>
         <button class="btn-link" data-action="copy-cl" data-id="${cl.id}">Copy</button>
+        <button class="btn-link" data-action="download-cl-pdf" data-id="${cl.id}">PDF</button>
         <button class="btn-link" data-action="download-cl" data-id="${cl.id}">.txt</button>
         <button class="btn-link danger" data-action="delete-cl" data-id="${cl.id}">Delete</button>
       </div>
@@ -1752,6 +1894,7 @@ function renderJobs() {
       <div class="card-actions">
         <button class="btn-link" data-action="view-job" data-id="${j.id}">Full JD</button>
         <button class="btn-link green" data-action="analyze-job" data-id="${j.id}">Analyze</button>
+        <button class="btn-link" data-action="edit-job" data-id="${j.id}">Edit</button>
         ${isApplied
           ? `<span style="color:var(--success);font-size:11px;font-weight:600">✓ Applied</span>`
           : `<button class="btn-link" data-action="mark-applied-job" data-id="${j.id}">Mark Applied</button>`}
@@ -1772,6 +1915,37 @@ window.deleteJob = async (id) => {
   await save(SK.JOBS, state.jobs);
   renderJobs();
   toast('Job deleted');
+};
+
+window.editJob = (id) => {
+  const j = state.jobs.find(x => x.id === id);
+  if (!j) return;
+  showHtmlModal('Edit Job', `
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <label style="font-size:12px;font-weight:600;color:var(--text-secondary)">Job Title</label>
+      <input id="editJobTitle" class="text-input" value="${escHtml(j.title)}" style="width:100%;box-sizing:border-box">
+      <label style="font-size:12px;font-weight:600;color:var(--text-secondary)">Company</label>
+      <input id="editJobCompany" class="text-input" value="${escHtml(j.company)}" style="width:100%;box-sizing:border-box">
+      <label style="font-size:12px;font-weight:600;color:var(--text-secondary)">Location</label>
+      <input id="editJobLocation" class="text-input" value="${escHtml(j.location || '')}" style="width:100%;box-sizing:border-box">
+      <button class="btn-primary" style="margin-top:4px" data-action="save-job-edit" data-id="${id}">Save Changes</button>
+    </div>
+  `);
+};
+
+window.saveJobEdit = async (id) => {
+  const j = state.jobs.find(x => x.id === id);
+  if (!j) return;
+  const title    = document.getElementById('editJobTitle')?.value.trim();
+  const company  = document.getElementById('editJobCompany')?.value.trim();
+  const location = document.getElementById('editJobLocation')?.value.trim();
+  if (title)    j.title    = title;
+  if (company)  j.company  = company;
+  if (location !== undefined) j.location = location;
+  await save(SK.JOBS, state.jobs);
+  closeModal();
+  renderJobs();
+  toast('Job updated');
 };
 
 window.markJobAppliedFromList = (id) => {
@@ -2117,6 +2291,81 @@ window.addEventListener('load',function(){ setTimeout(window.print,400); });
 </head><body>${body}</body></html>`;
 }
 
+// ── Cover Letter → formatted HTML (for print-to-PDF) ─────────────────
+function coverLetterToHtml(text, profile, docTitle) {
+  profile = profile || {};
+  docTitle = docTitle || 'Cover Letter';
+  function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+  const fullName = [profile.firstName, profile.lastName].filter(Boolean).join(' ') || profile.displayName || '';
+
+  // Build contact line parts
+  const contactParts = [];
+  if (profile.email) contactParts.push(`<a href="mailto:${esc(profile.email)}">${esc(profile.email)}</a>`);
+  if (profile.phone) contactParts.push(esc(profile.phone));
+  const loc = [profile.city, profile.state].filter(Boolean).join(', ');
+  if (loc) contactParts.push(esc(loc));
+  if (profile.linkedin) {
+    const href = /^https?:\/\//i.test(profile.linkedin) ? profile.linkedin : 'https://' + profile.linkedin;
+    contactParts.push(`<a href="${esc(href)}">LinkedIn</a>`);
+  }
+
+  // Format today's date
+  const dateStr = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+
+  // Strip markdown artifacts (**, *, __, numbered list markers, etc.)
+  function cleanMd(s) {
+    return s
+      .replace(/\*\*(.+?)\*\*/g, '$1')   // **bold**
+      .replace(/\*(.+?)\*/g, '$1')        // *italic*
+      .replace(/^[\d]+\.\s+/gm, '')       // 1. numbered lists
+      .replace(/^[-*]\s+/gm, '')          // - bullet lists
+      .trim();
+  }
+
+  // Split body into paragraphs (double-newline or single-newline blocks)
+  const rawParas = text.split(/\n{2,}/);
+  const paragraphs = rawParas.length > 1
+    ? rawParas.map(p => cleanMd(p)).filter(Boolean)
+    : text.split('\n').map(p => cleanMd(p)).filter(Boolean);
+
+  let body = '';
+  if (fullName)            body += `<div class="cl-name">${esc(fullName)}</div>`;
+  if (contactParts.length) body += `<div class="cl-contact">${contactParts.join(' &nbsp;|&nbsp; ')}</div>`;
+  body += `<div class="cl-date">${dateStr}</div>`;
+  body += `<div class="cl-salutation">Dear Hiring Manager,</div>`;
+  for (const para of paragraphs) body += `<p class="cl-para">${esc(para)}</p>`;
+  body += `<div class="cl-closing">Sincerely,</div>`;
+  if (fullName) body += `<div class="cl-sig">${esc(fullName)}</div>`;
+
+  return `<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>${esc(docTitle)}</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:Calibri,Arial,sans-serif;font-size:11pt;color:#000;background:#fff;padding:.75in 1in;width:8.5in;line-height:1.5}
+a{color:#1155CC;text-decoration:none}
+.cl-name{font-size:14pt;font-weight:700;margin-bottom:4px}
+.cl-contact{font-size:10pt;color:#333;margin-bottom:18px}
+.cl-date{font-size:11pt;margin-bottom:18px}
+.cl-salutation{font-size:11pt;margin-bottom:14px}
+.cl-para{font-size:11pt;margin-bottom:14px;text-align:justify}
+.cl-closing{font-size:11pt;margin-top:18px;margin-bottom:36px}
+.cl-sig{font-size:11pt;font-weight:600}
+@media print{@page{size:letter;margin:0}body{padding:.75in 1in;width:8.5in}}
+</style>
+<script>window.addEventListener('load',function(){ setTimeout(window.print,400); });<\/script>
+</head><body>${body}</body></html>`;
+}
+
+function downloadCoverLetterPdf(text, filename, profile) {
+  const html = coverLetterToHtml(text, profile, filename);
+  const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+  const url  = URL.createObjectURL(blob);
+  const win  = window.open(url, '_blank');
+  if (!win) toast('Allow popups for this extension to open PDF', 'error', 4000);
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
 // ── Tailor Resume ─────────────────────────────────────────────────────
 async function tailorResumeForJob(resume, job) {
   const btn = document.getElementById('btnTailorResume');
@@ -2140,7 +2389,7 @@ async function tailorResumeForJob(resume, job) {
       .trim();
 
     // Detect role type BEFORE building systemMsg (used inside the template)
-    const jdRole = detectRole((job.title || '') + ' ' + job.text.slice(0, 400));
+    const jdRole = detectRole((job.title || '') + ' ' + job.text.slice(0, 1000));
     const isPmRole = jdRole.role === 'product_manager' || jdRole.role === 'program_manager';
 
     const systemMsg = `You are an expert resume writer specializing in ATS optimization. Tailor the given resume to match the job description as closely as possible.
@@ -2427,6 +2676,7 @@ ${missingKws.length > 0 ? `FINAL REMINDER — before you finish, verify every ke
             <span style="font-size:11px;color:#6b7280">Based on your tailored resume · ~250 words</span>
             <div style="display:flex;gap:6px">
               <button id="btnCopyCLTailored" class="copy-btn">Copy</button>
+              <button id="btnDownloadCLPdf" class="copy-btn" style="background:#e0f2fe;color:#0369a1;border-color:#bae6fd">📄 PDF</button>
               <button id="btnSaveCLTailored" class="copy-btn" style="background:#ede9fe;color:#7c3aed;border-color:#ddd6fe">💾 Save</button>
             </div>
           </div>
@@ -2435,6 +2685,11 @@ ${missingKws.length > 0 ? `FINAL REMINDER — before you finish, verify every ke
         document.getElementById('btnCopyCLTailored').addEventListener('click', () => {
           const txt = document.getElementById('clTailoredText').value;
           navigator.clipboard.writeText(txt).then(() => toast('Cover letter copied!', 'success'));
+        });
+        document.getElementById('btnDownloadCLPdf').addEventListener('click', () => {
+          const txt = document.getElementById('clTailoredText').value;
+          const clFilename = `CoverLetter_${positionPart}_${companyPart}`;
+          downloadCoverLetterPdf(txt, clFilename, activeP);
         });
         document.getElementById('btnSaveCLTailored').addEventListener('click', async () => {
           const txt = document.getElementById('clTailoredText').value;
@@ -2475,6 +2730,13 @@ async function doAIAnalysis() {
 
   try {
     const { result, cached } = await analyzeResumeVsJD(resume, job);
+    // Stale-check: if user switched to a different job while analysis was running, discard results
+    const currentJobId = document.getElementById('analyzeJob')?.value;
+    if (currentJobId !== job.id) {
+      loading.classList.add('hidden');
+      toast('Job changed — analysis discarded (run again for current job)', 'error', 4000);
+      return;
+    }
     loading.classList.add('hidden');
     renderAnalysisResults(result, resume, job);
     if (cached) toast('Showing cached analysis (saved API credits)');
@@ -2662,13 +2924,22 @@ function renderAnalysisResults(r, resume, job) {
       document.getElementById('coverLetterContent').innerHTML = `
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
           <span class="text-sm text-bold">Your Cover Letter</span>
-          <button class="copy-btn" id="btnCopyCL">Copy</button>
+          <div style="display:flex;gap:6px">
+            <button class="copy-btn" style="background:#e0f2fe;color:#0369a1;border-color:#bae6fd" id="btnDownloadCLPdfAnalyze">📄 PDF</button>
+            <button class="copy-btn" id="btnCopyCL">Copy</button>
+          </div>
         </div>
         <textarea class="cover-letter-text" id="coverLetterText">${escHtml(letter)}</textarea>
       `;
       document.getElementById('btnCopyCL').addEventListener('click', () => {
         const txt = document.getElementById('coverLetterText').value;
         navigator.clipboard.writeText(txt).then(() => toast('Copied to clipboard!', 'success'));
+      });
+      document.getElementById('btnDownloadCLPdfAnalyze').addEventListener('click', () => {
+        const txt = document.getElementById('coverLetterText').value;
+        const activeP = state.profiles.find(x => x.id === state.activeProfileId) || state.profiles[0] || {};
+        const companySlug = (job.company || '').replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_|_$/g, '');
+        downloadCoverLetterPdf(txt, `Cover_Letter${companySlug ? '_' + companySlug : ''}`, activeP);
       });
       toast('Cover letter generated!', 'success');
     } catch (err) {
@@ -2866,7 +3137,7 @@ function renderSettings() {
   const pDN = document.getElementById('pDisplayName');
   if (pDN) pDN.value = activeP.displayName || '';
   const addBtn = document.getElementById('btnAddProfile');
-  if (addBtn) addBtn.style.display = state.profiles.length >= 2 ? 'none' : '';
+  if (addBtn) addBtn.style.display = '';
 
   document.getElementById('apiKeyInput').value    = apiKey   || '';
   document.getElementById('providerSelect').value = provider || 'gemini';
@@ -3140,25 +3411,7 @@ function wireEvents() {
     toast('Profile & answers saved! ✓', 'success');
   });
 
-  document.getElementById('btnAddProfile').addEventListener('click', async () => {
-    if (state.profiles.length >= 2) { toast('Maximum 2 profiles supported', 'error', 2000); return; }
-    const newP = {
-      id: 'profile_' + Date.now(), displayName: 'Profile 2',
-      firstName: '', lastName: '', email: '', phone: '',
-      linkedin: '', github: '', portfolio: '',
-      city: '', state: '', country: '', zipCode: '',
-      salary: '', availability: '',
-      whyThisRole: '', aboutMe: '', strength: '', weakness: '', coverLetter: '',
-      resumes: []
-    };
-    state.profiles.push(newP);
-    state.activeProfileId = newP.id;
-    await chrome.storage.local.set({ [SK.PROFILES]: state.profiles, [SK.ACTIVE_PROFILE]: newP.id });
-    syncActiveProfileToState();
-    renderProfileBar();
-    renderSettings();
-    toast('Profile 2 created! Fill in the details below and save.', 'success', 4000);
-  });
+  document.getElementById('btnAddProfile').addEventListener('click', addNewProfile);
 
   document.getElementById('btnExportData').addEventListener('click', exportData);
 
@@ -3203,6 +3456,9 @@ function wireEvents() {
       showModal(cl.name, cl.text);
     } else if (action === 'copy-cl') {
       navigator.clipboard.writeText(cl.text).then(() => toast('Cover letter copied!', 'success'));
+    } else if (action === 'download-cl-pdf') {
+      const activeP = state.profiles.find(x => x.id === state.activeProfileId) || state.profiles[0] || {};
+      downloadCoverLetterPdf(cl.text, cl.name, activeP);
     } else if (action === 'download-cl') {
       const filename = cl.name.replace(/[^a-zA-Z0-9 _\-–]/g, '').trim() + '.txt';
       triggerTextDownload(cl.text, filename);
@@ -3223,6 +3479,7 @@ function wireEvents() {
     const id = btn.dataset.id;
     if (action === 'view-job')        window.viewJob(id);
     if (action === 'analyze-job')     window.analyzeWith(id);
+    if (action === 'edit-job')        window.editJob(id);
     if (action === 'delete-job')      window.deleteJob(id);
     if (action === 'mark-applied-job') window.markJobAppliedFromList(id);
   });
@@ -3238,10 +3495,15 @@ function wireEvents() {
     if (action === 'delete-app')    window.deleteApp(id);
   });
 
-  // Profile bar switching
+  // Profile bar: switch or delete based on which element was clicked
   document.getElementById('profileBar').addEventListener('click', (e) => {
-    const btn = e.target.closest('[data-action="switch-profile"]');
-    if (btn) switchActiveProfile(btn.dataset.profileId);
+    const el = e.target.closest('[data-action]');
+    if (!el) return;
+    const action = el.dataset.action;
+    const id = el.dataset.profileId;
+    if (action === 'add-profile') addNewProfile();
+    else if (action === 'delete-profile') deleteProfile(id);
+    else if (action === 'switch-profile') switchActiveProfile(id);
   });
 
   // Modal (for Add Note, confirm-mark-applied, confirm-resume-for-app)
@@ -3266,6 +3528,9 @@ function wireEvents() {
 
     const dlPdf = e.target.closest('[data-action="download-tailored-pdf"]');
     if (dlPdf) window.downloadTailoredPdf?.();
+
+    const saveJobEdit = e.target.closest('[data-action="save-job-edit"]');
+    if (saveJobEdit) window.saveJobEdit(saveJobEdit.dataset.id);
   });
 
   // ── Listen for messages from popup / background ───────────────────
@@ -3282,7 +3547,8 @@ function wireEvents() {
         state.jobs = data[SK.JOBS] || [];
         if (state.activeTab === 'jobs') renderJobs(); // keep jobs list fresh
         const job = state.jobs.find(j => j.id === msg.jobId);
-        if (job) showJobBanner(job, msg.isNew);
+        // Only show banner for genuinely new captures — not for updates to already-saved jobs
+        if (job && msg.isNew) showJobBanner(job, true);
       });
     }
     if (msg.type === 'NAVIGATE_TO') {
@@ -3398,19 +3664,37 @@ async function saveJob(data) {
     const norm = normalizeJobUrl(data.url);
     const existing = state.jobs.find(j => j.url && normalizeJobUrl(j.url) === norm);
     if (existing) {
-      // Update stored text if the new capture is longer (e.g. first capture was empty)
-      if (data.text && data.text.length > (existing.text || '').length) {
-        existing.text = data.text;
-        if (data.title)    existing.title    = data.title;
-        if (data.company)  existing.company  = data.company;
-        if (data.location) existing.location = data.location;
+      // Independent per-field upgrade. Each field is only replaced when the new
+      // value is valid AND the old value is missing/junk (or, for text, shorter).
+      // Coupling fields (old behaviour) could overwrite a good title with a
+      // wrong one just because the new capture had more text.
+      const GENERIC_TITLE = /search all jobs|jobs at linkedin/i;
+      const newText = data.text || '';
+      const oldText = existing.text || '';
+      const textIsLonger = newText.length > oldText.length;
+      const isBadTitle = !existing.title || existing.title === 'Untitled Job' || GENERIC_TITLE.test(existing.title);
+      const isBadCompany = !existing.company || existing.company === 'Unknown Company' || existing.company === '';
+      const newTitleGood = data.title && data.title !== 'Untitled Job' && !GENERIC_TITLE.test(data.title);
+      const newCompanyGood = data.company && data.company !== 'Unknown Company' && data.company !== '';
+
+      let textChanged = false;
+      let anyChanged = false;
+      if (textIsLonger) { existing.text = newText; textChanged = true; anyChanged = true; }
+      if (isBadTitle && newTitleGood) { existing.title = data.title; anyChanged = true; }
+      if (isBadCompany && newCompanyGood) { existing.company = data.company; anyChanged = true; }
+      if (!existing.location && data.location) { existing.location = data.location; anyChanged = true; }
+
+      if (anyChanged) {
         await save(SK.JOBS, state.jobs);
-        // Invalidate stale analyses cached against the old (empty) JD text
-        const staleKeys = Object.keys(state.analyses).filter(k => k.endsWith('-' + existing.id));
-        if (staleKeys.length) {
-          staleKeys.forEach(k => delete state.analyses[k]);
-          await save(SK.ANALYSES, state.analyses);
+        // Only JD text changes invalidate cached analyses
+        if (textChanged) {
+          const staleKeys = Object.keys(state.analyses).filter(k => k.endsWith('-' + existing.id));
+          if (staleKeys.length) {
+            staleKeys.forEach(k => delete state.analyses[k]);
+            await save(SK.ANALYSES, state.analyses);
+          }
         }
+        renderJobs();
       }
       toast('Already in your library', '', 2500);
       return existing;
@@ -3516,12 +3800,16 @@ function showJobBanner(job, isNew) {
   banner.dataset.jobId = job.id;
   title.textContent = isNew
     ? `✨ ${job.title} at ${job.company}`
-    : `📌 ${job.title} at ${job.company}`;
+    : `🚀 ${job.title} at ${job.company}`;
   sub.textContent = isNew
     ? 'Auto-saved! Click to analyze with your best resume →'
     : 'Already in your library. Click to analyze →';
 
   banner.classList.remove('hidden');
+
+  // Auto-dismiss after 6 seconds — clear any previous timer first
+  clearTimeout(window._bannerDismissTimer);
+  window._bannerDismissTimer = setTimeout(hideJobBanner, 6000);
 }
 
 function hideJobBanner() {
@@ -3545,6 +3833,10 @@ function autoSelectBestResume(jobId) {
   const rSel = document.getElementById('analyzeResume');
   if (rSel) rSel.value = bestId;
 
+  // Clear stale AI analysis results from any previous job
+  document.getElementById('analyzeResults')?.classList.add('hidden');
+  document.getElementById('analyzeLoading')?.classList.add('hidden');
+
   // Auto-run local match immediately (free)
   doLocalMatch();
 }
@@ -3555,9 +3847,7 @@ async function checkCurrentTabOnLoad() {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab?.url) return;
 
-    // Check if current URL matches any saved job
-    const match = state.jobs.find(j => j.url && tab.url.startsWith(j.url.split('?')[0]));
-    if (match) showJobBanner(match, false);
+    // (No banner on startup — banner only shows for new auto-captures)
   } catch (_) {}
 }
 
