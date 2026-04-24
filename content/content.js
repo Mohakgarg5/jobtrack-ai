@@ -158,9 +158,11 @@
       }
 
       // ── data-job-id card lookup ───────────────────────────────────────────
+      // NOTE: use window.location here — the local `location` variable on line 18
+      // shadows window.location inside this function.
       if (!company) {
         try {
-          const jobId = new URL(location.href).searchParams.get('currentJobId');
+          const jobId = new URL(window.location.href).searchParams.get('currentJobId');
           if (jobId) {
             const card = document.querySelector(`[data-job-id="${jobId}"], [data-occludable-job-id="${jobId}"]`);
             if (card) {
@@ -1099,17 +1101,12 @@
     if (hostname.includes('linkedin.com')) {
       // Direct job view pages are always valid
       if (/\/jobs\/view\//i.test(url)) return true;
-      // Search/search-results pages: allow when a job is selected
-      if (/\/jobs\/search/i.test(url)) return true;
-      // Collections pages (e.g. "Top job picks for you"): only capture when
-      // a specific job is open in the panel (currentJobId in URL)
-      if (/\/jobs\/collections\//i.test(url)) {
+      // Every other LinkedIn jobs URL (search, search-results, collections, home,
+      // recommendations, company-filtered /jobs/search/?f_C=... landings) is only
+      // valid when a specific job is selected. Without currentJobId the DOM is the
+      // job list / feed chrome and extraction produces junk saves.
+      if (/linkedin\.com\/jobs/i.test(url)) {
         return /[?&]currentJobId=\d+/.test(url);
-      }
-      // Any other LinkedIn jobs page (e.g. /jobs/ home, recommendations, etc.)
-      // is valid as long as a specific job is selected (currentJobId in URL)
-      if (/linkedin\.com\/jobs/i.test(url) && /[?&]currentJobId=\d+/.test(url)) {
-        return true;
       }
       return false;
     }
@@ -1140,7 +1137,7 @@
                          !jobData.description || jobData.description.length < 200;
       if (needsFetch) {
         try {
-          const jobId = new URL(location.href).searchParams.get('currentJobId');
+          const jobId = new URL(window.location.href).searchParams.get('currentJobId');
           if (jobId) {
             const fetched = await fetchLinkedInJob(jobId);
             if (fetched) {
@@ -1340,7 +1337,7 @@
                            !jobData.description || jobData.description.length < 200;
         if (needsFetch) {
           try {
-            const jobId = new URL(location.href).searchParams.get('currentJobId');
+            const jobId = new URL(window.location.href).searchParams.get('currentJobId');
             if (jobId) {
               const fetched = await fetchLinkedInJob(jobId);
               if (fetched) {
@@ -1482,8 +1479,38 @@
         }
       }
       if (!description) {
-        const d = doc.querySelector('#job-details, .jobs-description-content__text, .description__text, .show-more-less-html__markup');
-        if (d) description = (d.textContent || '').replace(/\s+/g, ' ').trim();
+        const descSelectors = [
+          '#job-details',
+          '.jobs-description-content__text',
+          '.description__text',
+          '.show-more-less-html__markup',
+          '.jobs-description__container',
+          '[class*="description__text"]',
+          '[class*="jobs-description"]',
+          'section.description',
+          'div.description-section',
+          'div.core-section-container__content'
+        ];
+        for (const sel of descSelectors) {
+          const d = doc.querySelector(sel);
+          const txt = d && (d.textContent || '').replace(/\s+/g, ' ').trim();
+          if (txt && txt.length > 100) { description = txt; break; }
+        }
+      }
+      // Last-ditch: find the longest section/article on the fetched page that
+      // contains typical JD keywords. Mirrors genericExtractDescription but on
+      // the DOMParser doc (innerText is unreliable on detached docs).
+      if (!description) {
+        const candidates = doc.querySelectorAll('section, article, div');
+        let best = '';
+        for (const el of candidates) {
+          const txt = (el.textContent || '').replace(/\s+/g, ' ').trim();
+          if (txt.length > best.length && txt.length > 300 && txt.length < 20000 &&
+              /responsibilities|qualifications|requirements|experience|skills|about the role|what you.ll do/i.test(txt)) {
+            best = txt;
+          }
+        }
+        if (best) description = best;
       }
 
       return (title || description.length > 50) ? { title, company, location, description } : null;

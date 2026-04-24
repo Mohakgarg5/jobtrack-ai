@@ -3664,26 +3664,35 @@ async function saveJob(data) {
     const norm = normalizeJobUrl(data.url);
     const existing = state.jobs.find(j => j.url && normalizeJobUrl(j.url) === norm);
     if (existing) {
+      // Independent per-field upgrade. Each field is only replaced when the new
+      // value is valid AND the old value is missing/junk (or, for text, shorter).
+      // Coupling fields (old behaviour) could overwrite a good title with a
+      // wrong one just because the new capture had more text.
+      const GENERIC_TITLE = /search all jobs|jobs at linkedin/i;
       const newText = data.text || '';
       const oldText = existing.text || '';
       const textIsLonger = newText.length > oldText.length;
-      const isBadTitle = !existing.title || existing.title === 'Untitled Job' ||
-        /search all jobs|jobs at linkedin/i.test(existing.title);
+      const isBadTitle = !existing.title || existing.title === 'Untitled Job' || GENERIC_TITLE.test(existing.title);
       const isBadCompany = !existing.company || existing.company === 'Unknown Company' || existing.company === '';
-      const isGoodTitle = data.title && data.title !== 'Untitled Job' && !/search all jobs|jobs at linkedin/i.test(data.title);
-      const isGoodCompany = data.company && data.company !== 'Unknown Company' && data.company !== '';
-      let changed = false;
-      if (textIsLonger) { existing.text = newText; changed = true; }
-      if ((textIsLonger || isBadTitle) && isGoodTitle) { existing.title = data.title; changed = true; }
-      if ((textIsLonger || isBadCompany) && isGoodCompany) { existing.company = data.company; changed = true; }
-      if (textIsLonger && data.location) { existing.location = data.location; changed = true; }
-      if (changed) {
+      const newTitleGood = data.title && data.title !== 'Untitled Job' && !GENERIC_TITLE.test(data.title);
+      const newCompanyGood = data.company && data.company !== 'Unknown Company' && data.company !== '';
+
+      let textChanged = false;
+      let anyChanged = false;
+      if (textIsLonger) { existing.text = newText; textChanged = true; anyChanged = true; }
+      if (isBadTitle && newTitleGood) { existing.title = data.title; anyChanged = true; }
+      if (isBadCompany && newCompanyGood) { existing.company = data.company; anyChanged = true; }
+      if (!existing.location && data.location) { existing.location = data.location; anyChanged = true; }
+
+      if (anyChanged) {
         await save(SK.JOBS, state.jobs);
-        // Invalidate stale analyses cached against the old (empty) JD text
-        const staleKeys = Object.keys(state.analyses).filter(k => k.endsWith('-' + existing.id));
-        if (staleKeys.length) {
-          staleKeys.forEach(k => delete state.analyses[k]);
-          await save(SK.ANALYSES, state.analyses);
+        // Only JD text changes invalidate cached analyses
+        if (textChanged) {
+          const staleKeys = Object.keys(state.analyses).filter(k => k.endsWith('-' + existing.id));
+          if (staleKeys.length) {
+            staleKeys.forEach(k => delete state.analyses[k]);
+            await save(SK.ANALYSES, state.analyses);
+          }
         }
         renderJobs();
       }
